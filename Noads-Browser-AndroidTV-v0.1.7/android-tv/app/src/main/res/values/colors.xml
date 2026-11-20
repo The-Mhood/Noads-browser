@@ -1,0 +1,10 @@
+<resources>
+    <color name="noads_bg">#0B0E13</color>
+    <color name="noads_toolbar">#0E1219</color>
+    <color name="noads_field">#161C26</color>
+    <color name="noads_panel">#121821</color>
+    <color name="noads_border">#2F3B4E</color>
+    <color name="noads_text">#E8EDF4</color>
+    <color name="noads_muted">#8B98AB</color>
+    <color name="noads_accent">#7C5CFF</color>
+</resources>
