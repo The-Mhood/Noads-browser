@@ -16,7 +16,11 @@ const YOUTUBE_AD_HOSTS = new Set([
   'pagead2.googlesyndication.com',
   'googleads4.g.doubleclick.net',
   'www.googleadservices.com',
-  'imasdk.googleapis.com',
+  // NOTE: imasdk.googleapis.com is deliberately NOT hard-blocked. Some
+  // players (especially embeds) wait for the IMA SDK's load event; cancelling
+  // the script can stall the content video forever. Its ad *requests* are
+  // still blocked via the DoubleClick/AdSense hosts above and the maintained
+  // filter engine.
 ]);
 
 const YOUTUBE_HOST_RE = /(^|\.)youtube(?:-nocookie)?\.com$/i;

@@ -1,12 +1,15 @@
 /**
  * Navigation toolbar: back/forward/reload/home, the address/search field
- * with security indicator and domain completion, the protection shield
- * (blocked-count badge + warning dot), bookmark star, history and settings.
+ * with security indicator and live predictions (history, bookmarks, domain
+ * completions, search), the protection shield (blocked-count badge +
+ * warning dot), bookmark star, history and settings.
  */
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useActiveTab, useBrowser } from '../context/BrowserContext';
 import { suggestAddress } from '../../electron/normalize';
 import { HOME_URL } from '../../shared/constants';
+import type { HistoryEntry } from '../types';
+import { ipc } from '../data/ipc';
 
 function hostOf(url: string): string | null {
   try {
@@ -16,15 +19,30 @@ function hostOf(url: string): string | null {
   }
 }
 
+interface Suggestion {
+  kind: 'history' | 'bookmark' | 'domain' | 'search';
+  /** Primary line (title or domain). */
+  label: string;
+  /** Secondary line (url or provider name). */
+  detail: string;
+  /** What gets submitted when picked. */
+  value: string;
+}
+
+const MAX_SUGGESTIONS = 7;
+
 export function Toolbar() {
   const { shape, actions } = useBrowser();
   const tab = useActiveTab();
   const [value, setValue] = useState('');
   const [editing, setEditing] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [history, setHistory] = useState<HistoryEntry[]>([]);
+  const [highlight, setHighlight] = useState(-1);
   const inputRef = useRef<HTMLInputElement | null>(null);
 
   const displayUrl = tab?.displayUrl ?? '';
+  const bookmarks = shape.settings?.bookmarks ?? [];
 
   // Follow the active tab's address while the user is not typing.
   useEffect(() => {
@@ -45,7 +63,84 @@ export function Toolbar() {
     return () => window.removeEventListener('adf:focus-address', focus);
   }, [displayUrl]);
 
-  const suggestion = useMemo(() => (editing ? suggestAddress(value) : null), [editing, value]);
+  // History is loaded lazily the first time the address bar gains focus.
+  useEffect(() => {
+    if (!editing) return;
+    let live = true;
+    ipc
+      .historyGet()
+      .then((list) => {
+        if (live) setHistory(list);
+      })
+      .catch(() => {});
+    return () => {
+      live = false;
+    };
+  }, [editing]);
+
+  const suggestions = useMemo<Suggestion[]>(() => {
+    if (!editing) return [];
+    const q = value.trim().toLowerCase();
+    const out: Suggestion[] = [];
+    const seen = new Set<string>();
+
+    const push = (s: Suggestion) => {
+      if (out.length >= MAX_SUGGESTIONS || seen.has(s.value)) return;
+      seen.add(s.value);
+      out.push(s);
+    };
+
+    if (q === '') {
+      // Empty field: most recent history, then bookmarks.
+      for (const h of history.slice(0, 4)) {
+        push({ kind: 'history', label: h.title, detail: h.url.replace(/^https?:\/\//, ''), value: h.url });
+      }
+      for (const b of bookmarks.slice(0, 3)) {
+        push({ kind: 'bookmark', label: b.title, detail: b.url.replace(/^https?:\/\//, ''), value: b.url });
+      }
+      return out;
+    }
+
+    // Domain completion first (explicit prefix match, e.g. "goo" → google.com).
+    const domain = suggestAddress(value);
+    if (domain) {
+      push({ kind: 'domain', label: domain, detail: 'Open website', value: domain });
+    }
+
+    // History + bookmark matches (title or URL contains the query).
+    for (const h of history) {
+      if (out.length >= MAX_SUGGESTIONS - 1) break;
+      if (
+        h.url.toLowerCase().includes(q) ||
+        h.title.toLowerCase().includes(q)
+      ) {
+        push({ kind: 'history', label: h.title, detail: h.url.replace(/^https?:\/\//, ''), value: h.url });
+      }
+    }
+    for (const b of bookmarks) {
+      if (out.length >= MAX_SUGGESTIONS - 1) break;
+      if (
+        b.url.toLowerCase().includes(q) ||
+        b.title.toLowerCase().includes(q)
+      ) {
+        push({ kind: 'bookmark', label: b.title, detail: b.url.replace(/^https?:\/\//, ''), value: b.url });
+      }
+    }
+
+    // Last row: search for the typed text.
+    push({
+      kind: 'search',
+      label: `Search for “${value.trim()}”`,
+      detail: 'Search',
+      value: value.trim(),
+    });
+    return out;
+  }, [editing, value, history, bookmarks]);
+
+  // Reset the highlight whenever the suggestion list changes.
+  useEffect(() => {
+    setHighlight(suggestions.length > 0 ? 0 : -1);
+  }, [suggestions]);
 
   const submit = async (raw: string) => {
     const text = raw.trim();
@@ -74,6 +169,13 @@ export function Toolbar() {
     const existing = shape.settings?.bookmarks.find((b) => b.url === tab.url);
     if (existing) void actions.removeBookmark(existing.id);
     else void actions.addBookmark(tab.url, tab.title).then((msg) => setError(msg));
+  };
+
+  const KIND_ICON: Record<Suggestion['kind'], string> = {
+    history: '🕘',
+    bookmark: '★',
+    domain: '🌐',
+    search: '🔍',
   };
 
   return (
@@ -138,6 +240,8 @@ export function Toolbar() {
           value={value}
           placeholder="Search or enter address"
           aria-label="Address and search bar"
+          aria-expanded={editing && suggestions.length > 0}
+          role="combobox"
           spellCheck={false}
           autoCapitalize="off"
           autoCorrect="off"
@@ -150,38 +254,61 @@ export function Toolbar() {
             if (error) setError(null);
           }}
           onBlur={() => {
-            setEditing(false);
-            setError(null);
-            setValue(displayUrl);
+            // Delay so a click on a suggestion lands before the list closes.
+            setTimeout(() => {
+              setEditing(false);
+              setError(null);
+              setValue(displayUrl);
+            }, 120);
           }}
           onKeyDown={(e) => {
-            if (e.key === 'Enter') {
+            if (e.key === 'ArrowDown' && suggestions.length > 0) {
               e.preventDefault();
-              void submit(suggestion && value.trim() !== '' && !value.includes(' ') ? suggestion : value);
+              setHighlight((h) => (h + 1) % suggestions.length);
+            } else if (e.key === 'ArrowUp' && suggestions.length > 0) {
+              e.preventDefault();
+              setHighlight((h) => (h - 1 + suggestions.length) % suggestions.length);
+            } else if (e.key === 'Enter') {
+              e.preventDefault();
+              const picked = highlight >= 0 && highlight < suggestions.length
+                ? suggestions[highlight].value
+                : value;
+              void submit(picked);
             } else if (e.key === 'Escape') {
               setEditing(false);
               setValue(displayUrl);
               inputRef.current?.blur();
-            } else if (e.key === 'Tab' && suggestion) {
-              e.preventDefault();
-              setValue(suggestion);
+            } else if (e.key === 'Tab') {
+              const domain = suggestAddress(value);
+              if (domain) {
+                e.preventDefault();
+                setValue(domain);
+              }
             }
           }}
         />
-        {suggestion && (
-          <button
-            className="addr-suggestion"
-            title={`Open ${suggestion}`}
-            onMouseDown={(e) => {
-              e.preventDefault();
-              void submit(suggestion);
-            }}
-          >
-            {suggestion} ↵
-          </button>
-        )}
         {tab?.isLoading && <span className="addr-spinner" aria-hidden />}
         {error && <div className="addr-error-ring" role="alert">{error}</div>}
+        {editing && suggestions.length > 0 && (
+          <ul className="addr-dropdown" role="listbox" aria-label="Suggestions">
+            {suggestions.map((s, i) => (
+              <li key={`${s.kind}-${s.value}`} role="option" aria-selected={i === highlight}>
+                <button
+                  className={`addr-drop-item${i === highlight ? ' addr-drop-active' : ''}`}
+                  onMouseDown={(e) => {
+                    e.preventDefault();
+                    void submit(s.value);
+                  }}
+                  onMouseEnter={() => setHighlight(i)}
+                >
+                  <span className="addr-drop-icon" aria-hidden>{KIND_ICON[s.kind]}</span>
+                  <span className="addr-drop-label">{s.label}</span>
+                  <span className="addr-drop-detail">{s.detail}</span>
+                </button>
+              </li>
+            ))}
+          </ul>
+        )}
       </div>
 
       <div className="nav-buttons">

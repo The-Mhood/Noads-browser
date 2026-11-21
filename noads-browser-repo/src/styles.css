@@ -399,6 +399,68 @@ select:focus-visible {
   z-index: 40;
 }
 
+.addr-dropdown {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: -1px;
+  right: -1px;
+  margin: 0;
+  padding: 5px;
+  list-style: none;
+  background: var(--charcoal-3);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-panel);
+  z-index: 50;
+  max-height: 320px;
+  overflow-y: auto;
+}
+
+.addr-drop-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  text-align: left;
+  padding: 8px 10px;
+  border-radius: var(--radius-s);
+}
+
+.addr-drop-item:hover,
+.addr-drop-active {
+  background: var(--maroon);
+}
+
+.addr-drop-icon {
+  flex-shrink: 0;
+  font-size: 12px;
+  opacity: 0.8;
+}
+
+.addr-drop-label {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13px;
+  color: var(--text);
+}
+
+.addr-drop-detail {
+  flex-shrink: 0;
+  max-width: 45%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11.5px;
+  color: var(--muted);
+}
+
+.addr-drop-active .addr-drop-detail {
+  color: var(--ivory);
+}
+
 /* ---------------------------------------------------------------- shield */
 
 .shield-on {
