@@ -6,6 +6,7 @@
  * on top of it.
  */
 import { session } from 'electron';
+import * as fsSync from 'node:fs';
 import type { ElectronBlocker } from '@ghostery/adblocker-electron';
 import type { BlockedEntry, FilterEngineStatus, Settings } from '../shared/types';
 import { makeMatcher, type DomainMatcher } from './blocklist';
@@ -112,10 +113,32 @@ export class AdBlocker {
     }
   };
 
+  private readonly logPath: string | null;
+
   constructor(
     private readonly getSettings: () => Settings,
     private readonly bundledDomains: string[],
-  ) {}
+    logPath: string | null = null,
+  ) {
+    this.logPath = logPath;
+  }
+
+  /** Append one diagnostic line to a userData log file so release builds
+   *  (which have no console) can report what the blocker actually did. */
+  private logDiag(...values: unknown[]): void {
+    const line =
+      `[${new Date().toISOString()}] ` +
+      values.map((v) => (typeof v === 'string' ? v : JSON.stringify(v))).join(' ') +
+      '\n';
+    console.log('[adblocker]', ...values);
+    if (this.logPath) {
+      try {
+        fsSync.appendFileSync(this.logPath, line);
+      } catch {
+        /* diagnostics must never break startup */
+      }
+    }
+  }
 
   get enabled(): boolean {
     return this.enabledFlag;
@@ -141,12 +164,19 @@ export class AdBlocker {
     this.installFallbackListener();
     this.setEnabled(this.getSettings().blockEnabled);
     this.userDataPath = userDataPath;
+    this.logDiag(
+      `install start; bundledDomains=${this.bundledDomains.length}`,
+      bundledEnginePath ? `bundledEngine=${bundledEnginePath}` : 'no bundled engine path',
+    );
 
     if (bundledEnginePath) {
       const bundledEngine = await loadBundledFilterEngine(bundledEnginePath);
       if (bundledEngine) {
         this.engineStatus = { source: 'bundled', updatedAt: null, updating: true };
         this.activateEngine(bundledEngine);
+        this.logDiag('bundled engine activated');
+      } else {
+        this.logDiag('bundled engine FAILED to load (check adblocker.log)');
       }
     }
 
@@ -159,6 +189,7 @@ export class AdBlocker {
         updatedAt: loaded.generatedAt,
         updating: false,
       };
+      this.logDiag(`maintained engine active (source=${loaded.source})`);
       if (loaded.source === 'stale-cache' && this.warning === null) {
         this.warning = 'Maintained filters are being served from a stale cache.';
       }
@@ -179,6 +210,20 @@ export class AdBlocker {
       }
       console.error('[adblocker] maintained filter engine failed to load:', err);
       console.error('[adblocker] fallback details:', describeError(err));
+      this.logDiag('maintained engine load FAILED:', describeError(err));
+    }
+
+    // Verify at startup whether session-level blocking is actually live, and
+    // log it. This turns "ads are showing" reports into actionable data.
+    try {
+      const enabledInSession = this.engine
+        ? this.engine.isBlockingEnabled(session.defaultSession)
+        : false;
+      this.logDiag(
+        `startup: engine=${this.engine ? 'yes' : 'no'} blockingInSession=${enabledInSession} enabledFlag=${this.enabledFlag} fallbackInstalled=${this.fallbackInstalled} source=${this.engineStatus.source}`,
+      );
+    } catch (err) {
+      this.logDiag('startup self-check failed:', describeError(err));
     }
 
     this.onChange?.();

@@ -955,7 +955,11 @@ app.whenReady().then(async () => {
   settings = await loadSettingsFromDisk();
   historyEntries = await loadHistoryFromDisk();
 
-  blocker = new AdBlocker(() => settings, bundled);
+  blocker = new AdBlocker(
+    () => settings,
+    bundled,
+    path.join(app.getPath('userData'), 'adblocker.log'),
+  );
   blocker.setOnChange(scheduleBroadcast);
   // Attribute blocked requests to their tab (drives the per-tab badge).
   blocker.setOnTabBlocked((webContentsId) => {
