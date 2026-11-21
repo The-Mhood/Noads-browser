@@ -1,6 +1,8 @@
 name: Release
 
 on:
+  push:
+    tags: ['v*']
   workflow_dispatch:
     inputs:
       version:
@@ -80,12 +82,12 @@ jobs:
       - name: Create GitHub Release with all artifacts
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ inputs.version }}
-          name: Noads Browser ${{ inputs.version }}
+          tag_name: ${{ inputs.version || github.ref_name }}
+          name: Noads Browser ${{ inputs.version || github.ref_name }}
           draft: false
           fail_on_unmatched_files: true
           body: |
-            ## Noads Browser ${{ inputs.version }}
+            ## Noads Browser ${{ inputs.version || github.ref_name }}
 
             - **Windows**: NSIS installer (x64 + arm64)
             - **macOS**: zip (x64 + Apple Silicon), unsigned — right-click → Open on first launch
