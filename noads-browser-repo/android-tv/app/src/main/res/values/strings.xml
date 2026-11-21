@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Noads Browser</string>
+    <string name="address_hint">Search or enter address</string>
+    <string name="address_dialog_title">Go to address</string>
+    <string name="go">Go</string>
+    <string name="blocked_zero">🛡 0 blocked</string>
+    <string name="blocked_count">🛡 %1$d blocked</string>
+</resources>

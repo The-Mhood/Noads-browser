@@ -1,0 +1,97 @@
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Release version (used for the tag, e.g. v0.2.0)'
+        required: true
+        default: 'v0.2.0'
+
+permissions:
+  contents: write
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: noads-browser-repo/package-lock.json
+      - run: npm ci
+        working-directory: noads-browser-repo
+      - run: npm run package:win
+        working-directory: noads-browser-repo
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows
+          path: noads-browser-repo/windows-release/*.exe
+
+  mac:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: noads-browser-repo/package-lock.json
+      - run: npm ci
+        working-directory: noads-browser-repo
+      - run: npm run package:mac
+        working-directory: noads-browser-repo
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos
+          path: noads-browser-repo/windows-release/*.zip
+
+  android:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+      - uses: android-actions/setup-android@v3
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.9'
+      - run: yes | sdkmanager --licenses > /dev/null || true
+      - name: Build phone + TV APK
+        run: gradle -p noads-browser-repo/android-tv :app:assembleDebug --no-daemon --stacktrace
+      - name: Rename artifact
+        run: |
+          cp noads-browser-repo/android-tv/app/build/outputs/apk/debug/app-debug.apk \
+             noads-browser-phone-tv.apk
+      - uses: actions/upload-artifact@v4
+        with:
+          name: android
+          path: noads-browser-phone-tv.apk
+
+  publish:
+    needs: [windows, mac, android]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+      - name: Create GitHub Release with all artifacts
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ inputs.version }}
+          name: Noads Browser ${{ inputs.version }}
+          draft: false
+          fail_on_unmatched_files: true
+          body: |
+            ## Noads Browser ${{ inputs.version }}
+
+            - **Windows**: NSIS installer (x64 + arm64)
+            - **macOS**: zip (x64 + Apple Silicon), unsigned — right-click → Open on first launch
+            - **Android phone + Android TV**: one debug-signed APK. Phones/tablets get the touch UI;
+              Android TV / Google TV shows the leanback 10-foot UI (install via sideload, appears in the TV app row).
+          files: |
+            windows/*.exe
+            macos/*.zip
+            android/*.apk

@@ -11,9 +11,9 @@ what each platform requires — including limitations we will not paper over.
 | Windows | ✅ Implemented (this repo) | Chromium (Electron) | Network + cosmetic + scriptlets | NSIS packaging configured (`npm run package:win`) |
 | macOS | ✅ Implemented (this repo) | Chromium (Electron) | Network + cosmetic + scriptlets | zip packaging configured; signing/notarization needs Apple credentials |
 | Linux | ✅ Runs (dev target) | Chromium (Electron) | Network + cosmetic + scriptlets | Launch with `--no-sandbox` where required |
-| Android phones | ⛔ Not implemented | Requires native rebuild | See below | Electron cannot target Android |
+| Android phones | ✅ Implemented (`android-tv/`) | Android WebView | Domain-level network blocking | Touch UI; shares APK with TV |
 | iOS / iPadOS | ⛔ Not implemented | WKWebView (Apple mandate) | Safari content-blocker rules only | See below |
-| Android TV / Google TV | ⛔ Not implemented | Android WebView | WebViewClient interception | `android-tv/` is gradle scaffolding only — no app module exists yet |
+| Android TV / Google TV | ✅ Implemented (`android-tv/`) | Android WebView | Domain-level network blocking | Leanback 10-foot D-pad UI; sideload APK |
 | Other Smart TVs (Tizen, webOS) | ⛔ Not supported | proprietary | — | No third-party browser sideload route; would need per-vendor apps |
 
 ## What "implemented" means here
@@ -29,14 +29,13 @@ Electron/Chromium cannot be shipped on Android, iOS or TV devices. Those
 ports require native applications that share the NoAds *policy and design
 system* but not the desktop engine APIs:
 
-- **Android (phone + TV):** Kotlin app on Android WebView with a
-  `WebViewClient.shouldInterceptRequest` filter compiled from the same
-  EasyList-source lists, plus (TV) a Leanback-style 10-foot D-pad UI with
-  focus management, on-screen keyboard and remote-friendly playback controls.
-  Phone and TV must be separate layouts (not rescaled versions). Building or
-  validating this requires the Android SDK/Gradle toolchain, which is not
-  available in the current build environment — the `android-tv/` directory
-  contains only the Gradle wrapper for that future module.
+- **Android (phone + TV):** Kotlin/Java app (`android-tv/`) on Android
+  WebView with `WebViewClient.shouldInterceptRequest` blocking against the
+  same bundled blocklist as desktop. Phone and TV are separate activities in
+  one APK: a touch UI, and a leanback 10-foot D-pad UI with focusable
+  controls, remote address entry (system on-screen keyboard) and video
+  fullscreen. YouTube ad blocking on WebView covers third-party ad endpoints;
+  first-party stitched ads are not reliably blockable.
 - **iOS:** Apple requires WKWebView. Ad blocking is possible only through
   Safari content-blocker rule lists (compiled JSON) applied to
   `WKContentRuleListStore` — a strictly weaker model than desktop
