@@ -7,7 +7,7 @@
  */
 import { session } from 'electron';
 import type { ElectronBlocker } from '@ghostery/adblocker-electron';
-import type { BlockedEntry, Settings } from '../shared/types';
+import type { BlockedEntry, FilterEngineStatus, Settings } from '../shared/types';
 import { makeMatcher, type DomainMatcher } from './blocklist';
 import { loadBundledFilterEngine, loadFilterEngine } from './adblockEngine';
 import { buildDomainFilterRules } from './adblockRules';
@@ -56,6 +56,25 @@ export class AdBlocker {
   private appliedCustomRules: string[] = [];
   private fallbackInstalled = false;
   private permissionHandlerInstalled = false;
+  private userDataPath: string | null = null;
+  private engineStatus: FilterEngineStatus = {
+    source: 'custom-only',
+    updatedAt: null,
+    updating: false,
+  };
+  /** Notified (with the WebContents id) on every blocked request, so the
+   *  main process can attribute it to a tab. */
+  private onTabBlocked: ((webContentsId: number | undefined) => void) | null = null;
+
+  /** Live provenance of the maintained filter engine. */
+  get filterStatus(): FilterEngineStatus {
+    return { ...this.engineStatus };
+  }
+
+  /** Register the per-tab attribution hook (called very frequently). */
+  setOnTabBlocked(cb: ((webContentsId: number | undefined) => void) | null): void {
+    this.onTabBlocked = cb;
+  }
 
   private readonly fallbackRequestHandler = (
     details: Electron.OnBeforeRequestListenerDetails,
@@ -76,7 +95,7 @@ export class AdBlocker {
         return;
       }
       if (isYouTubeAdRequest(details)) {
-        this.recordBlocked(details.url, host);
+        this.recordBlocked(details.url, host, details.webContentsId);
         callback({ cancel: true });
         return;
       }
@@ -84,7 +103,7 @@ export class AdBlocker {
         callback({});
         return;
       }
-      this.recordBlocked(details.url, host);
+      this.recordBlocked(details.url, host, details.webContentsId);
       callback({ cancel: true });
     } catch (err) {
       // Never take down the request pipeline: log loudly, allow the request.
@@ -121,10 +140,12 @@ export class AdBlocker {
     // Never leave a new installation unprotected while lists are downloading.
     this.installFallbackListener();
     this.setEnabled(this.getSettings().blockEnabled);
+    this.userDataPath = userDataPath;
 
     if (bundledEnginePath) {
       const bundledEngine = await loadBundledFilterEngine(bundledEnginePath);
       if (bundledEngine) {
+        this.engineStatus = { source: 'bundled', updatedAt: null, updating: true };
         this.activateEngine(bundledEngine);
       }
     }
@@ -133,10 +154,16 @@ export class AdBlocker {
       const loaded = await loadFilterEngine(userDataPath);
       this.activateEngine(loaded.engine);
       this.warning = loaded.warning;
+      this.engineStatus = {
+        source: loaded.source,
+        updatedAt: loaded.generatedAt,
+        updating: false,
+      };
       if (loaded.source === 'stale-cache' && this.warning === null) {
         this.warning = 'Maintained filters are being served from a stale cache.';
       }
     } catch (err) {
+      this.engineStatus = { ...this.engineStatus, updating: false };
       if (this.engine) {
         // A bundled or stale engine is already active, so keep it serving
         // requests instead of dropping all filtering when refresh fails.
@@ -146,6 +173,7 @@ export class AdBlocker {
         this.engine = null;
         this.warning =
           'Maintained ad filters could not be loaded; only the bundled and custom domain rules are active.';
+        this.engineStatus = { source: 'custom-only', updatedAt: null, updating: false };
         this.installFallbackListener();
         this.setEnabled(this.getSettings().blockEnabled);
       }
@@ -154,6 +182,35 @@ export class AdBlocker {
     }
 
     this.onChange?.();
+  }
+
+  /**
+   * User-requested "update filters now": bypasses the weekly freshness check
+   * and downloads the current maintained lists. Never removes protection
+   * while updating — the current engine keeps serving until the new one is
+   * ready. Resolves to the resulting status; on failure the previous engine
+   * stays active and a warning explains what happened.
+   */
+  async forceUpdate(): Promise<FilterEngineStatus> {
+    if (this.engineStatus.updating || !this.userDataPath) return this.filterStatus;
+    this.engineStatus = { ...this.engineStatus, updating: true };
+    this.onChange?.();
+    try {
+      const loaded = await loadFilterEngine(this.userDataPath, { force: true });
+      this.activateEngine(loaded.engine);
+      this.warning = loaded.warning;
+      this.engineStatus = {
+        source: loaded.source,
+        updatedAt: loaded.generatedAt,
+        updating: false,
+      };
+    } catch (err) {
+      this.engineStatus = { ...this.engineStatus, updating: false };
+      this.warning = `Filter update failed (${describeError(err)}); the previous lists remain active.`;
+      console.error('[adblocker] manual filter update failed:', err);
+    }
+    this.onChange?.();
+    return this.filterStatus;
   }
 
   /** (Re)build custom matchers and apply settings changes immediately. */
@@ -248,12 +305,12 @@ export class AdBlocker {
         return;
       }
       if (host !== null && isYouTubeAdRequest(details)) {
-        this.recordBlocked(details.url, host);
+        this.recordBlocked(details.url, host, details.webContentsId);
         callback({ cancel: true });
         return;
       }
       if (host !== null && details.resourceType === 'mainFrame' && this.blockMatcher.test(host)) {
-        this.recordBlocked(details.url, host);
+        this.recordBlocked(details.url, host, details.webContentsId);
         callback({ cancel: true });
         return;
       }
@@ -274,7 +331,7 @@ export class AdBlocker {
     };
 
     engine.on('request-blocked', (request) => {
-      if (this.enabledFlag) this.recordBlocked(request.url, request.hostname);
+      if (this.enabledFlag) this.recordBlocked(request.url, request.hostname, request.tabId);
     });
   }
 
@@ -350,7 +407,7 @@ export class AdBlocker {
     this.permissionHandlerInstalled = true;
   }
 
-  private recordBlocked(url: string, host: string): void {
+  private recordBlocked(url: string, host: string, webContentsId?: number): void {
     const at = Date.now();
     const normalizedHost = host.trim().toLowerCase() || hostOf(url) || 'unknown host';
     this.stats.count += 1;
@@ -361,6 +418,7 @@ export class AdBlocker {
     ].slice(0, 50);
     this.lastBlockedUrl = url;
     this.lastBlockedAt = at;
+    this.onTabBlocked?.(webContentsId);
     this.onChange?.();
   }
 }

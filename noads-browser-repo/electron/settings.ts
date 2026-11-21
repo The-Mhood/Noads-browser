@@ -28,6 +28,7 @@ export const DEFAULT_SETTINGS: Settings = Object.freeze({
   lastTabs: [] as string[],
   bookmarks: [] as Bookmark[],
   searchProvider: DEFAULT_SEARCH_PROVIDER,
+  autoHideChrome: true,
 });
 
 export const MAX_USER_DOMAINS = 500;
@@ -81,6 +82,10 @@ export function sanitizeSettings(raw: unknown): Settings {
     searchProvider: isKnownProviderId(r.searchProvider)
       ? r.searchProvider
       : DEFAULT_SEARCH_PROVIDER,
+    autoHideChrome:
+      typeof r.autoHideChrome === 'boolean'
+        ? r.autoHideChrome
+        : DEFAULT_SETTINGS.autoHideChrome,
   };
 }
 
@@ -177,6 +182,13 @@ export function applySettingsUpdate(
       throw new Error(`Unknown search provider "${String(update.searchProvider)}".`);
     }
     next.searchProvider = update.searchProvider;
+  }
+
+  if (update.autoHideChrome !== undefined) {
+    if (typeof update.autoHideChrome !== 'boolean') {
+      throw new Error('autoHideChrome must be a boolean.');
+    }
+    next.autoHideChrome = update.autoHideChrome;
   }
 
   // Never persist the pseudo-home URL as a real page.

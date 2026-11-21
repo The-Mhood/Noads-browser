@@ -6,11 +6,15 @@
 import { ipcMain } from 'electron';
 import type {
   BrowserState,
+  FilterEngineStatus,
+  HistoryEntry,
   IpcResult,
   NavigationTarget,
   PopoverKind,
   Settings,
 } from '../shared/types';
+
+const POPOVER_KINDS = new Set<PopoverKind>(['settings', 'blocker', 'history', 'find']);
 
 export interface IpcDeps {
   getSettings(): Settings;
@@ -33,6 +37,17 @@ export interface IpcDeps {
   setPopover(kind: PopoverKind | null): void;
   restoreTabs(): void;
   dismissRestoreTabs(): void;
+  duplicateTab(id: string): void;
+  togglePin(id: string): void;
+  toggleMute(id: string): void;
+  closeOthers(id: string): void;
+  moveTab(id: string, index: number): void;
+  find(text: string, forward: boolean, findNext: boolean): void;
+  stopFind(): void;
+  zoom(direction: 'in' | 'out' | 'reset'): number;
+  getHistory(): HistoryEntry[];
+  clearHistory(): void;
+  updateFilters(): Promise<FilterEngineStatus>;
 }
 
 export function registerIpc(deps: IpcDeps): void {
@@ -47,7 +62,7 @@ export function registerIpc(deps: IpcDeps): void {
 
   ipcMain.handle('browser:exit-fullscreen', () => deps.exitFullScreen());
   ipcMain.handle('ui:popover', (_event, kind: unknown) => {
-    if (kind !== null && kind !== 'settings' && kind !== 'blocker') {
+    if (kind !== null && (typeof kind !== 'string' || !POPOVER_KINDS.has(kind as PopoverKind))) {
       throw new Error('Invalid popover kind.');
     }
     deps.setPopover(kind as PopoverKind | null);
@@ -114,4 +129,39 @@ export function registerIpc(deps: IpcDeps): void {
   ipcMain.handle('tabs:activate', (_event, id: unknown) => {
     if (typeof id === 'string') deps.activateTab(id);
   });
+  ipcMain.handle('tabs:duplicate', (_event, id: unknown) => {
+    if (typeof id === 'string') deps.duplicateTab(id);
+  });
+  ipcMain.handle('tabs:toggle-pin', (_event, id: unknown) => {
+    if (typeof id === 'string') deps.togglePin(id);
+  });
+  ipcMain.handle('tabs:toggle-mute', (_event, id: unknown) => {
+    if (typeof id === 'string') deps.toggleMute(id);
+  });
+  ipcMain.handle('tabs:close-others', (_event, id: unknown) => {
+    if (typeof id === 'string') deps.closeOthers(id);
+  });
+  ipcMain.handle('tabs:move', (_event, id: unknown, index: unknown) => {
+    if (typeof id === 'string' && typeof index === 'number' && Number.isInteger(index)) {
+      deps.moveTab(id, index);
+    }
+  });
+
+  ipcMain.handle('find:search', (_event, text: unknown, forward: unknown, findNext: unknown) => {
+    if (typeof text !== 'string' || text.length > 512) return;
+    deps.find(text, forward !== false, findNext === true);
+  });
+  ipcMain.handle('find:stop', () => deps.stopFind());
+
+  ipcMain.handle('zoom:set', (_event, direction: unknown): number => {
+    if (direction !== 'in' && direction !== 'out' && direction !== 'reset') {
+      return deps.zoom('reset');
+    }
+    return deps.zoom(direction);
+  });
+
+  ipcMain.handle('history:get', (): HistoryEntry[] => deps.getHistory());
+  ipcMain.handle('history:clear', () => deps.clearHistory());
+
+  ipcMain.handle('filters:update', (): Promise<FilterEngineStatus> => deps.updateFilters());
 }
