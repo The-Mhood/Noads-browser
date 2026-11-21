@@ -114,17 +114,24 @@ class (history, find) alongside settings/shield. See
 
 - `dist/` (renderer bundle), `dist-electron/` (main/preload bundles) build
   successfully.
-- Installers: `npm run package:win` (NSIS x64/arm64) and
-  `npm run package:mac` (zip x64/arm64, unsigned) configured; CI workflow
-  `.github/workflows/ci.yml` runs verify + packaging on GitHub runners
-  (which can download Electron). Packages could not be produced in this
-  sandbox.
+- **Shipped:** GitHub Release
+  [v0.2.0](https://github.com/The-Mhood/Noads-browser/releases/tag/v0.2.0),
+  built by `.github/workflows/release.yml` (run 44949028981, all jobs green):
+  - Windows NSIS installers: `Noads.Browser-Setup-0.2.0.exe` (+ x64, arm64)
+  - macOS zips: `Noads.Browser-0.2.0-mac.zip` (x64), `-arm64-mac.zip`
+    (unsigned; right-click → Open on first launch)
+  - Android phone + Android TV: `noads-browser-phone-tv.apk` (debug-signed,
+    sideload via `adb install`; appears in the TV leanback app row)
+- Local: `npm run package:win` (NSIS x64/arm64), `npm run package:mac` (zip,
+  unsigned).
 
 ## 11. Remaining known limitations
 
-- Android phone / Android TV / iOS require native rebuilds (Electron cannot
-  target them); `android-tv/` is scaffolding only. Strategy and honest
-  capability matrix: [docs/PLATFORMS.md](docs/PLATFORMS.md).
+- Android phone / Android TV: native WebView app shipped (`android-tv/`,
+  APK on the v0.2.0 release). Domain-level blocking only — no EasyList
+  cosmetic/scriptlet engine on WebView; YouTube coverage is weaker than
+  desktop. iOS still requires a separate WKWebView app (not built).
+- Details and honest capability matrix: [docs/PLATFORMS.md](docs/PLATFORMS.md).
 - Picture-in-picture: no reliable Electron API surface; not implemented
   rather than faked.
 - Downloads have save-as dialogs but no in-app downloads panel yet.
@@ -133,6 +140,10 @@ class (history, find) alongside settings/shield. See
 
 ## 12. Git commits (this iteration)
 
-- `bf34652` — renderer rebuild, dashboard, history, find, zoom, tab ops.
-- `0f65856` — docs, hygiene, Esc-handling fix.
-- Final: CI workflow + this report.
+- `d3e77df` — fullscreen-close crash fix, maximize-player repair, chrome
+  auto-hide (11 s inactivity).
+- `0476532` — Android phone + TV app module, release pipeline.
+- `0f69a83` — release workflow Android-SDK fix (tag `v0.2.0`).
+
+(Earlier squashed work: renderer rebuild, dashboard, history, find, zoom,
+tab ops, docs.)
