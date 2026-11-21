@@ -1,0 +1,85 @@
+{
+  "name": "noads-browser",
+  "version": "0.1.10",
+  "description": "A desktop web browser that blocks ads and popups at the network level",
+  "main": "dist-electron/main.js",
+  "private": true,
+  "scripts": {
+    "build:renderer": "vite build",
+    "build:electron": "node build-electron.mjs",
+    "build": "npm run build:renderer && npm run build:electron",
+    "package:win": "npm run build && electron-builder --win nsis --x64 --arm64",
+    "package:mac": "npm run build && CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --mac zip --x64 --arm64",
+    "start": "npm run build && electron .",
+    "dev": "npm run start",
+    "typecheck": "tsc --noEmit -p tsconfig.web.json && tsc --noEmit -p tsconfig.node.json",
+    "test": "vitest run"
+  },
+  "license": "MIT",
+  "build": {
+    "appId": "com.noads.browser",
+    "productName": "Noads Browser",
+    "asar": true,
+    "compression": "maximum",
+    "directories": {
+      "output": "windows-release",
+      "buildResources": "assets"
+    },
+    "files": [
+      "dist/**/*",
+      "dist-electron/**/*",
+      "assets/**/*",
+      "package.json",
+      "node_modules/**/*",
+      "!node_modules/.cache{,/**/*}",
+      "!src{,/**/*}",
+      "!electron{,/**/*}",
+      "!tests{,/**/*}",
+      "!smoke{,/**/*}",
+      "!*.ts",
+      "!README.md",
+      "!tsconfig*.json",
+      "!vite.config.mts",
+      "!build-electron.mjs",
+      "!package-lock.json"
+    ],
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64",
+            "arm64"
+          ]
+        }
+      ],
+      "artifactName": "${productName}-Setup-${version}-${arch}.${ext}",
+      "signAndEditExecutable": false
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "perMachine": false,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true
+    }
+  },
+  "dependencies": {
+    "@ghostery/adblocker-electron": "2.18.2",
+    "ogl": "^1.0.11",
+    "react": "^19.3.0",
+    "react-dom": "^19.3.0"
+  },
+  "devDependencies": {
+    "@types/node": "^26.5.1",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "@vitejs/plugin-react": "^6.1.1",
+    "electron": "^41.7.1",
+    "electron-builder": "^26.18.0",
+    "esbuild": "^0.28.2",
+    "typescript": "^7.0.2",
+    "vite": "^8.3.0",
+    "vitest": "^4.1.11"
+  }
+}
