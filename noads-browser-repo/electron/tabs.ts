@@ -326,7 +326,9 @@ export class Tab {
             console.error('[cosmetic] supplemental CSS injection failed:', err),
           );
         }
-        wc.executeJavaScript(buildPopupFilterJS(cosmetic.hosts)).catch((err: unknown) =>
+        wc.executeJavaScript(
+          buildPopupFilterJS(cosmetic.hosts, this.deps.getSettings().youtubeCompat),
+        ).catch((err: unknown) =>
           console.error('[cosmetic] supplemental popup filter injection failed:', err),
         );
       }

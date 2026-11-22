@@ -147,6 +147,24 @@ export function SettingsPanel({ standalone = false }: { standalone?: boolean }) 
                 </small>
               </span>
             </label>
+            <label className="toggle-row">
+              <input
+                type="checkbox"
+                checked={settings.youtubeCompat}
+                disabled={!settings.blockEnabled}
+                onChange={(e) =>
+                  void actions.saveSettings({ youtubeCompat: e.target.checked })
+                }
+              />
+              <span>
+                YouTube compatibility mode
+                <small className="toggle-sub">
+                  If videos won't play or load slowly, turn this on: it stops the
+                  app's custom YouTube interception and uses the standard filter
+                  engine only. Reload the video after changing.
+                </small>
+              </span>
+            </label>
           </div>
 
           <DomainListEditor

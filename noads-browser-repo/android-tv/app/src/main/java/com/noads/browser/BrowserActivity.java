@@ -122,7 +122,7 @@ public abstract class BrowserActivity extends Activity {
         } else if (!input.contains(" ") && input.contains(".")) {
             url = "https://" + input;
         } else {
-            url = "https://duckduckgo.com/html/?q=" + Uri.encode(input);
+            url = "https://duckduckgo.com/?q=" + Uri.encode(input);
         }
         web.loadUrl(url);
     }

@@ -109,7 +109,7 @@ const SAFE_HOST_RE = /^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-
  * script uses it to recognize ad iframes inside popups. Pure string
  * building; the script is idempotent and ES5-safe for any page.
  */
-export function buildPopupFilterJS(blockedHosts: string[]): string {
+export function buildPopupFilterJS(blockedHosts: string[], youtubeCompat = false): string {
   const hosts = blockedHosts.filter(
     (h): h is string => typeof h === 'string' && h.length > 0 && h.length <= 253 && SAFE_HOST_RE.test(h),
   );
@@ -117,9 +117,12 @@ export function buildPopupFilterJS(blockedHosts: string[]): string {
   if (window.__adfPopupFilter) return;
   window.__adfPopupFilter = true;
   var AD_HOSTS = ${JSON.stringify(hosts)};
-  var IS_YT = /(^|\\.)youtube\\.com$/i.test(location.hostname);
-  var lastScanAt = 0;
-  var lastYtStepAt = 0;
+    // Compatibility mode: rely on the maintained engine alone for YouTube.
+    var COMPAT = ${JSON.stringify(youtubeCompat)};
+    var IS_YT = /(^|\\.)youtube\\.com$/i.test(location.hostname);
+    if (COMPAT && IS_YT) return;
+    var lastScanAt = 0;
+    var lastYtStepAt = 0;
 
   function isAdHost(u) {
     var h;

@@ -95,7 +95,9 @@ export class AdBlocker {
         callback({});
         return;
       }
-      if (isYouTubeAdRequest(details)) {
+      // Compatibility mode leaves first-party YouTube interception to the
+      // maintained engine alone; some players stall when ad_break is cut.
+      if (!this.getSettings().youtubeCompat && isYouTubeAdRequest(details)) {
         this.recordBlocked(details.url, host, details.webContentsId);
         callback({ cancel: true });
         return;
@@ -349,7 +351,7 @@ export class AdBlocker {
         callback({});
         return;
       }
-      if (host !== null && isYouTubeAdRequest(details)) {
+      if (host !== null && !this.getSettings().youtubeCompat && isYouTubeAdRequest(details)) {
         this.recordBlocked(details.url, host, details.webContentsId);
         callback({ cancel: true });
         return;

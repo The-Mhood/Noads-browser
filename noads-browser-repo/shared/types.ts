@@ -172,6 +172,12 @@ export interface Settings {
   /** Hide the tab strip and toolbar after a period of inactivity on web
    *  pages; any mouse/keyboard activity brings them back. */
   autoHideChrome: boolean;
+  /** Compatibility mode: disable the app's custom YouTube ad interception
+   *  (first-party ad-break blocking + player monitor) and rely on the
+   *  maintained EasyList engine only. Some players stall when their ad
+   *  requests are cancelled; turning this on trades some YouTube ad coverage
+   *  for reliable playback. */
+  youtubeCompat: boolean;
 }
 
 /** What the address bar resolved to after parsing untrusted user input. */

@@ -29,6 +29,7 @@ export const DEFAULT_SETTINGS: Settings = Object.freeze({
   bookmarks: [] as Bookmark[],
   searchProvider: DEFAULT_SEARCH_PROVIDER,
   autoHideChrome: true,
+  youtubeCompat: false,
 });
 
 export const MAX_USER_DOMAINS = 500;
@@ -86,6 +87,10 @@ export function sanitizeSettings(raw: unknown): Settings {
       typeof r.autoHideChrome === 'boolean'
         ? r.autoHideChrome
         : DEFAULT_SETTINGS.autoHideChrome,
+    youtubeCompat:
+      typeof r.youtubeCompat === 'boolean'
+        ? r.youtubeCompat
+        : DEFAULT_SETTINGS.youtubeCompat,
   };
 }
 
@@ -189,6 +194,13 @@ export function applySettingsUpdate(
       throw new Error('autoHideChrome must be a boolean.');
     }
     next.autoHideChrome = update.autoHideChrome;
+  }
+
+  if (update.youtubeCompat !== undefined) {
+    if (typeof update.youtubeCompat !== 'boolean') {
+      throw new Error('youtubeCompat must be a boolean.');
+    }
+    next.youtubeCompat = update.youtubeCompat;
   }
 
   // Never persist the pseudo-home URL as a real page.
