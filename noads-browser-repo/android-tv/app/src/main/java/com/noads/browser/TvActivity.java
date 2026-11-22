@@ -44,10 +44,10 @@ public class TvActivity extends BrowserActivity {
         WebView webView = findViewById(R.id.tv_web);
         attachBrowser(webView, topBar);
 
-        pointer = new TvPointer((ViewGroup) findViewById(android.R.id.content), webView);
+        pointer = new TvPointer((ViewGroup) getWindow().getDecorView(), webView);
         pointer.setChromeVisible(true);
         // Wait for layout before centering (width/height are 0 in onCreate).
-        findViewById(android.R.id.content).post(() -> pointer.center());
+        getWindow().getDecorView().post(() -> pointer.center());
 
         wireButton(R.id.tv_btn_back, v -> { if (web.canGoBack()) web.goBack(); });
         wireButton(R.id.tv_btn_forward, v -> { if (web.canGoForward()) web.goForward(); });
@@ -57,6 +57,13 @@ public class TvActivity extends BrowserActivity {
 
         scheduleChromeHide();
         navigate("https://duckduckgo.com");
+
+        // Confirm blocking is actually active (and how many domains loaded).
+        if (blocker != null) {
+            android.widget.Toast.makeText(this,
+                    "Noads: " + blocker.domainCount() + " ad domains blocked",
+                    android.widget.Toast.LENGTH_LONG).show();
+        }
     }
 
     private void wireButton(int id, View.OnClickListener listener) {

@@ -64,4 +64,9 @@ public final class AdBlocker {
     public int getBlockedCount() {
         return blockedCount;
     }
+
+    /** Number of blocked domains loaded (0 means the list failed to load). */
+    public int domainCount() {
+        return domains.size();
+    }
 }

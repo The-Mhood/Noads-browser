@@ -60,15 +60,14 @@ public class TvPointer {
         cursor = new ImageView(root.getContext());
         cursor.setImageResource(R.drawable.cursor);
         int size = (int) (28 * root.getResources().getDisplayMetrics().density);
+        // The cursor floats above the WebView. Use the window decor view (the
+        // true topmost container) so the WebView can never cover it.
         cursor.setLayoutParams(new ViewGroup.LayoutParams(size, size));
-        // Start hidden until first center() call positions it on screen.
         cursor.setVisibility(View.INVISIBLE);
-        root.addView(cursor);
-        // The WebView renders above siblings; the cursor must be on top.
-        cursor.bringToFront();
-        cursor.setElevation(10000f);
         cursor.setClickable(false);
         cursor.setFocusable(false);
+        cursor.setElevation(100000f);
+        root.addView(cursor);
     }
 
     /** Show/hide the pointer with the chrome (header). */
