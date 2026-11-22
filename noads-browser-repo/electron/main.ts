@@ -130,6 +130,7 @@ function hideChrome(): void {
   if (chromeHidden) return;
   if (!manager || manager.active.mode !== 'web') return; // keep chrome on home/error
   if (popoverKind !== null) return; // user is interacting with a panel
+  if (fullscreen?.isAny() || mainWindow?.isFullScreen()) return; // never chrome over fullscreen video
   chromeHidden = true;
   layoutWithChromeState();
   broadcastState();
@@ -356,11 +357,12 @@ function layoutPageView(): void {
   if (!mainWindow || !manager) return;
   const view = manager.attachedView;
   const [width, height] = mainWindow.getContentSize();
-  // The normal browser window always reserves space for its own chrome. Player
-  // fullscreen remains an inline page state, so this layout keeps tabs and the
-  // address bar visible instead of moving the page to another window. When
-  // the chrome is auto-hidden, the page takes the full window.
-  const top = chromeHidden ? 0 : CHROME_HEIGHT;
+  // In page-owned fullscreen (or OS fullscreen the page entered), the video
+  // must fill the ENTIRE window — the browser chrome is hidden by the OS
+  // fullscreen transition, so reserving CHROME_HEIGHT would push the video
+  // down and letterbox it. Only reserve the strip when the chrome is showing.
+  const inFullscreen = mainWindow.isFullScreen() || (fullscreen?.isAny() ?? false);
+  const top = inFullscreen || chromeHidden ? 0 : CHROME_HEIGHT;
   if (view) {
     view.setVisible(true);
     view.setBounds({
