@@ -387,6 +387,7 @@ function syncFullscreen(): void {
 function handleHtmlFullscreen(tab: Tab, entered: boolean): void {
   // NOTE: never touch tab.wc here — this fires from the 'destroyed' handler
   // when a fullscreen tab is closed, and the webContents is already gone.
+  console.log(`[fullscreen] html event tab=${tab.id} entered=${entered}`);
   fullscreenDebug('html-event', { tabId: tab.id, entered });
   fullscreen?.track(tab, entered);
   syncFullscreen();

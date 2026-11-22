@@ -61,17 +61,20 @@ public class TvPointer {
         cursor.setImageResource(R.drawable.cursor);
         int size = (int) (28 * root.getResources().getDisplayMetrics().density);
         cursor.setLayoutParams(new ViewGroup.LayoutParams(size, size));
-        cursor.setVisibility(View.GONE);
+        // Start hidden until first center() call positions it on screen.
+        cursor.setVisibility(View.INVISIBLE);
         root.addView(cursor);
         // The WebView renders above siblings; the cursor must be on top.
         cursor.bringToFront();
-        cursor.setElevation(1000f);
+        cursor.setElevation(10000f);
+        cursor.setClickable(false);
+        cursor.setFocusable(false);
     }
 
     /** Show/hide the pointer with the chrome (header). */
     public void setChromeVisible(boolean chromeVisible) {
         visible = chromeVisible;
-        cursor.setVisibility(chromeVisible ? View.VISIBLE : View.GONE);
+        setCursorVisible(chromeVisible);
         if (chromeVisible && x < 0) center();
     }
 
@@ -81,7 +84,13 @@ public class TvPointer {
         targetX = x;
         targetY = y;
         place();
-        cursor.setVisibility(visible ? View.VISIBLE : View.GONE);
+        setCursorVisible(visible);
+        android.util.Log.i("TvPointer", "center x=" + x + " y=" + y + " rootW=" + root.getWidth() + " visible=" + visible);
+    }
+
+    private void setCursorVisible(boolean show) {
+        cursor.setVisibility(show ? View.VISIBLE : View.INVISIBLE);
+        if (show) cursor.bringToFront();
     }
 
     private void place() {

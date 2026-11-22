@@ -99,6 +99,7 @@ export function createFullscreenTracker(deps: FullscreenDeps): FullscreenTracker
     sync() {
       const win = deps.window();
       if (!win || win.isDestroyed()) return;
+      console.log(`[fullscreen] sync tabs=${tabs.size} presentationActive=${presentationActive} winFullscreen=${win.isFullScreen()}`);
 
       if (tabs.size > 0) {
         htmlExitRequested = false;
