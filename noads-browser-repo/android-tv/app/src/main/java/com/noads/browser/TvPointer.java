@@ -82,8 +82,10 @@ public class TvPointer {
     }
 
     private void place() {
-        cursor.setTranslationX(x - cursor.getWidth() / 2f);
-        cursor.setTranslationY(y - cursor.getHeight() / 2f);
+        // Arrow cursor: the tip is the top-left of the drawable, so anchor the
+        // cursor's top-left corner to the pointer position (not the center).
+        cursor.setTranslationX(x);
+        cursor.setTranslationY(y);
     }
 
     private void step() {

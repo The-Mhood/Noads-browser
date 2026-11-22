@@ -1,8 +1,16 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- Virtual TV pointer: a small high-contrast ring cursor -->
-<shape xmlns:android="http://schemas.android.com/apk/res/android"
-    android:shape="oval">
-    <solid android:color="#22FFFFFF" />
-    <stroke android:width="2.5dp" android:color="#F2EEE9" />
-    <size android:width="28dp" android:height="28dp" />
-</shape>
+<!-- Classic mouse arrow cursor for the TV pointer -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="26dp"
+    android:height="26dp"
+    android:viewportWidth="26"
+    android:viewportHeight="26">
+    <!-- subtle outline for contrast on light/dark pages -->
+    <path
+        android:fillColor="#292827"
+        android:pathData="M7,2 L21,14 L14.6,14.8 L18,22 L15.2,23.2 L11.8,15.6 L7,19.6 Z" />
+    <!-- white arrow body -->
+    <path
+        android:fillColor="#F2EEE9"
+        android:pathData="M8,4.6 L18.6,13.4 L13.4,14 L16.4,20.6 L15,21.4 L12,14.8 L8,18 Z" />
+</vector>
