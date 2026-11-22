@@ -34,6 +34,61 @@ export const FULLSCREEN_BRIDGE_INJECT = `(function () {
       (video && video.webkitDisplayingFullscreen));
   }
 
+  // Choose the element that should actually FILL the screen: the nearest
+  // player container around the clicked control when it holds the video
+  // (controls stay visible), else the video itself, else the document.
+  // Requesting fullscreen on the bare document was the "window went
+  // fullscreen but the video stayed small" failure mode.
+  function fullscreenTarget(control) {
+    if (control && typeof control.closest === 'function') {
+      var container = control.closest(
+        '[class*="player" i],[id*="player" i],[class*="video" i],[id*="video" i],' +
+          '[class*="watch" i],[class*="media" i]'
+      );
+      if (container && typeof container.querySelector === 'function' &&
+          container.querySelector('video')) {
+        return container;
+      }
+    }
+    return document.querySelector('video') || document.documentElement;
+  }
+
+  // Request fullscreen on the best target and report the REAL outcome. The
+  // request must start inside the click handler (user activation); the
+  // report follows the promise resolution (or a legacy-change timeout).
+  function enterFullscreenNear(control) {
+    if (state()) return;
+    var target = fullscreenTarget(control);
+    var method = target && (target.requestFullscreen || target.webkitRequestFullscreen);
+    if (!method) { report(false); return; }
+    try {
+      var req = method.call(target);
+      if (req && typeof req.then === 'function') {
+        req.then(function () { report(true); }, function () {
+          // Player container was rejected (e.g. iframe without
+          // allowfullscreen): fall back to the bare video element once.
+          var video = document.querySelector('video');
+          var vm = video && target !== video &&
+            (video.requestFullscreen || video.webkitRequestFullscreen);
+          if (vm) {
+            try {
+              var vreq = vm.call(video);
+              if (vreq && typeof vreq.then === 'function') {
+                vreq.then(function () { report(true); }, function () { report(false); });
+                return;
+              }
+            } catch (e2) { /* fall through */ }
+          }
+          report(false);
+        });
+      } else {
+        setTimeout(function () { report(state()); }, 80);
+      }
+    } catch (e) {
+      report(false);
+    }
+  }
+
   function labelOf(el) {
     return ((el.getAttribute('aria-label') || '') + ' ' +
       (el.getAttribute('title') || '') + ' ' +
@@ -59,25 +114,6 @@ export const FULLSCREEN_BRIDGE_INJECT = `(function () {
     return /exit|leave|close|compress|shrink|collapse|mini\\s*-?\\s*mize|mini\\s*-?\\s*mise/.test(labelOf(el));
   }
 
-  function requestDocumentFullscreen() {
-    if (state()) return;
-    var video = document.querySelector('video');
-    var target = video && (video.requestFullscreen || video.webkitRequestFullscreen)
-      ? video
-      : document.documentElement;
-    var requestMethod = target && (target.requestFullscreen || target.webkitRequestFullscreen);
-    if (!requestMethod) return;
-    try {
-      var request = requestMethod.call(target);
-      if (request && typeof request.catch === 'function') {
-        request.catch(function () { report(false); });
-      }
-    } catch (e) {
-      report(false);
-      /* The page may reject programmatic fullscreen; main still remains inline. */
-    }
-  }
-
   document.addEventListener('fullscreenchange', function () { report(state()); }, true);
   document.addEventListener('webkitfullscreenchange', function () { report(state()); }, true);
   window.addEventListener('message', function (event) {
@@ -90,8 +126,7 @@ export const FULLSCREEN_BRIDGE_INJECT = `(function () {
   document.addEventListener('click', function (event) {
     var control = fullscreenControl(event.target);
     if (!control) return;
-    var exiting = isExitControl(control) || state();
-    if (exiting) {
+    if (isExitControl(control) || state()) {
       // Close the dedicated presentation immediately for custom players that
       // never update document.fullscreenElement. If the page's own handler
       // really did enter/keep native fullscreen, reconcile that result after
@@ -100,12 +135,7 @@ export const FULLSCREEN_BRIDGE_INJECT = `(function () {
       setTimeout(function () { if (state()) report(true); }, 0);
       return;
     }
-
-    // Report immediately while the click still has user activation. The
-    // player's own handler runs afterward; if it does not request fullscreen,
-    // request fullscreen for the document as a safe fallback.
-    report(true);
-    requestDocumentFullscreen();
+    enterFullscreenNear(control);
   }, true);
 
   // Double-clicking a video is a common native-player fullscreen gesture. It
@@ -119,7 +149,6 @@ export const FULLSCREEN_BRIDGE_INJECT = `(function () {
       setTimeout(function () { if (state()) report(true); }, 0);
       return;
     }
-    report(true);
-    requestDocumentFullscreen();
+    enterFullscreenNear(target);
   }, true);
 })();`;

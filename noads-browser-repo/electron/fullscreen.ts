@@ -44,9 +44,18 @@ export function createFullscreenTracker(deps: FullscreenDeps): FullscreenTracker
 
   function forcePagesOut(): void {
     for (const tab of tabs.values()) {
-      tab.wc.executeJavaScript(EXIT_JS).catch(() => {
-        /* tab going away; its destroyed handler reconciles */
-      });
+      // A tab in this map may have just been destroyed (closing a fullscreen
+      // tab); its WebContents is gone, so guard before touching it.
+      try {
+        const wc = tab.wc as Electron.WebContents | undefined;
+        if (wc && !wc.isDestroyed()) {
+          wc.executeJavaScript(EXIT_JS).catch(() => {
+            /* tab going away; its destroyed handler reconciles */
+          });
+        }
+      } catch {
+        /* destroyed view */
+      }
     }
     tabs.clear();
     htmlExitRequested = false;

@@ -12,9 +12,11 @@ describe('YouTube ad request policy', () => {
     expect(
       isYouTubeAdRequest({ url: 'https://www.youtube.com/pagead/interaction/?id=1' }),
     ).toBe(true);
+    // The IMA SDK itself is never blocked (players may wait on its load
+    // event); its ad requests are blocked via the ad hosts above.
     expect(
       isYouTubeAdRequest({ url: 'https://imasdk.googleapis.com/js/sdkloader/ima3.js' }),
-    ).toBe(true);
+    ).toBe(false);
     expect(
       isYouTubeAdRequest({
         url: 'https://youtubei.googleapis.com/youtubei/v1/player/ad_break?key=test',

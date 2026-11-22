@@ -1,0 +1,26 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+defaults:
+  run:
+    working-directory: noads-browser-repo
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: noads-browser-repo/package-lock.json
+      # The Electron binary is not needed for typecheck/unit tests/bundles.
+      - run: ELECTRON_SKIP_BINARY_DOWNLOAD=1 npm ci
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run build

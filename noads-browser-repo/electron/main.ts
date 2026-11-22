@@ -25,6 +25,8 @@ import { CHROME_HEIGHT, HOME_URL } from '../shared/constants';
 import type {
   Bookmark,
   BrowserState,
+  FindState,
+  HistoryEntry,
   NavigationTarget,
   Notice,
   PopoverKind,
@@ -34,6 +36,7 @@ import { AdBlocker } from './session';
 import { makeMatcher } from './blocklist';
 import { DEFAULT_SETTINGS, applySettingsUpdate, sanitizeSettings } from './settings';
 import { bookmarkUrl, displayFor } from './normalize';
+import { recordVisit, sanitizeHistory } from './history';
 import { registerIpc } from './ipc';
 import { Tab, TabManager, type TabDeps, type ViewHost } from './tabs';
 import { createFullscreenTracker, type FullscreenTracker } from './fullscreen';
@@ -59,6 +62,111 @@ let popoverKind: PopoverKind | null = null;
 /** Previous-session tabs offered from the initial home screen. */
 let pendingRestoreTabs: string[] = [];
 let preservingStartupTabs = false;
+
+// ---------------------------------------------------------------------------
+// Browsing history (userData/history.json, debounced atomic writes)
+// ---------------------------------------------------------------------------
+
+let historyEntries: HistoryEntry[] = [];
+let historySaveTimer: NodeJS.Timeout | null = null;
+
+function historyPath(): string {
+  return path.join(app.getPath('userData'), 'history.json');
+}
+
+async function loadHistoryFromDisk(): Promise<HistoryEntry[]> {
+  try {
+    const raw = await fs.promises.readFile(historyPath(), 'utf8');
+    return sanitizeHistory(JSON.parse(raw) as unknown);
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== 'ENOENT') {
+      console.error('[history] history.json unreadable — starting empty:', err);
+    }
+    return [];
+  }
+}
+
+function persistHistoryDebounced(): void {
+  if (historySaveTimer) return;
+  historySaveTimer = setTimeout(() => {
+    historySaveTimer = null;
+    void (async () => {
+      try {
+        const tmp = `${historyPath()}.tmp`;
+        await fs.promises.writeFile(tmp, JSON.stringify(historyEntries), 'utf8');
+        await fs.promises.rename(tmp, historyPath());
+      } catch (err) {
+        console.error('[history] failed to persist:', err);
+      }
+    })();
+  }, 500);
+}
+
+function recordHistory(url: string, title: string): void {
+  historyEntries = recordVisit(historyEntries, url, title, Date.now());
+  persistHistoryDebounced();
+}
+
+/** Find-in-page state for the active tab (owned here, mirrored to the UI). */
+let findState: FindState = { open: false, text: '', matches: 0, activeMatch: 0 };
+let lastActiveKey = '';
+
+// ---------------------------------------------------------------------------
+// Chrome auto-hide: after inactivity on a web page, the tab strip and toolbar
+// slide away and the page takes the full window. Any input brings them back.
+// ---------------------------------------------------------------------------
+
+const CHROME_AUTOHIDE_MS = 11_000;
+
+let chromeHidden = false;
+let chromeHideTimer: NodeJS.Timeout | null = null;
+let lastActivityAt = 0;
+
+function layoutWithChromeState(): void {
+  layoutPageView();
+}
+
+function hideChrome(): void {
+  if (chromeHidden) return;
+  if (!manager || manager.active.mode !== 'web') return; // keep chrome on home/error
+  if (popoverKind !== null) return; // user is interacting with a panel
+  if (fullscreen?.isAny() || mainWindow?.isFullScreen()) return; // never chrome over fullscreen video
+  chromeHidden = true;
+  layoutWithChromeState();
+  broadcastState();
+}
+
+function noteActivity(): void {
+  if (!settings.autoHideChrome) return;
+  const now = Date.now();
+  // Page mousemove fires constantly; one reset per 250 ms is plenty.
+  if (now - lastActivityAt < 250 && chromeHideTimer !== null) return;
+  lastActivityAt = now;
+  if (chromeHideTimer) clearTimeout(chromeHideTimer);
+  chromeHideTimer = setTimeout(hideChrome, CHROME_AUTOHIDE_MS);
+  if (chromeHidden) {
+    chromeHidden = false;
+    layoutWithChromeState();
+    broadcastState();
+  }
+}
+
+/** Re-evaluate auto-hide when the active tab/mode changes (navigation,
+ *  tab switch): show the chrome and restart the idle countdown. */
+function resetChromeAutoHide(): void {
+  if (chromeHideTimer) {
+    clearTimeout(chromeHideTimer);
+    chromeHideTimer = null;
+  }
+  lastActivityAt = 0;
+  if (chromeHidden) {
+    chromeHidden = false;
+    layoutWithChromeState();
+  }
+  if (settings.autoHideChrome && manager?.active.mode === 'web') {
+    chromeHideTimer = setTimeout(hideChrome, CHROME_AUTOHIDE_MS);
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Settings persistence (repository seam: swap for a database/API later)
@@ -138,10 +246,20 @@ function collectState(): BrowserState {
     },
     notice,
     restoreTabs: [...pendingRestoreTabs],
+    engine: b?.filterStatus ?? { source: 'custom-only', updatedAt: null, updating: false },
+    find: findState,
+    chromeHidden,
   };
 }
 
 function broadcastState(): void {
+  // Tab switches and home↔web mode changes reset the auto-hide countdown —
+  // but pure stat updates (blocked counters) must not.
+  const activeKey = manager ? `${manager.getActiveId()}:${manager.active.mode}` : '';
+  if (activeKey !== lastActiveKey) {
+    lastActiveKey = activeKey;
+    resetChromeAutoHide();
+  }
   syncAttachedView();
   layoutPageView();
   const win = mainWindow;
@@ -182,7 +300,7 @@ function setNotice(message: string): void {
  * hide the very navigation surface the user needs while watching video.
  */
 function enterPlayerFullscreen(tab: Tab): void {
-  fullscreenDebug('enter-player-fullscreen', { tabId: tab.id, url: tab.wc.getURL() });
+  fullscreenDebug('enter-player-fullscreen', { tabId: tab.id });
   if (!mainWindow || mainWindow.isDestroyed() || tab.wc.isDestroyed()) return;
   if (manager?.active !== tab) manager?.activate(tab.id);
   mainWindow.show();
@@ -208,13 +326,23 @@ function exitPlayerFullscreen(): void {
 function layoutPopover(): void {
   if (!mainWindow || mainWindow.isDestroyed() || !popoverView || !popoverKind) return;
   const [windowWidth, windowHeight] = mainWindow.getContentSize();
-  const width = Math.min(360, Math.max(0, windowWidth - 16));
-  const y = CHROME_HEIGHT + 8;
+  const y = CHROME_HEIGHT + 6;
   const availableHeight = Math.max(0, windowHeight - y - 8);
   // The native bounds are intentionally close to the visible panel. A
   // transparent native view cannot pass clicks to a sibling page view, so it
   // must not cover the whole right-hand side of the browser.
-  const desiredHeight = popoverKind === 'blocker' ? 350 : 520;
+  const desiredHeight =
+    popoverKind === 'blocker'
+      ? 400
+      : popoverKind === 'history'
+        ? 480
+        : popoverKind === 'find'
+          ? 56
+          : 560;
+  const width =
+    popoverKind === 'find'
+      ? Math.min(420, Math.max(0, windowWidth - 16))
+      : Math.min(360, Math.max(0, windowWidth - 16));
   const height = Math.min(availableHeight, desiredHeight);
   popoverView.setBounds({
     x: Math.max(8, windowWidth - width - 8),
@@ -229,10 +357,12 @@ function layoutPageView(): void {
   if (!mainWindow || !manager) return;
   const view = manager.attachedView;
   const [width, height] = mainWindow.getContentSize();
-  // The normal browser window always reserves space for its own chrome. Player
-  // fullscreen remains an inline page state, so this layout keeps tabs and the
-  // address bar visible instead of moving the page to another window.
-  const top = CHROME_HEIGHT;
+  // In page-owned fullscreen (or OS fullscreen the page entered), the video
+  // must fill the ENTIRE window — the browser chrome is hidden by the OS
+  // fullscreen transition, so reserving CHROME_HEIGHT would push the video
+  // down and letterbox it. Only reserve the strip when the chrome is showing.
+  const inFullscreen = mainWindow.isFullScreen() || (fullscreen?.isAny() ?? false);
+  const top = inFullscreen || chromeHidden ? 0 : CHROME_HEIGHT;
   if (view) {
     view.setVisible(true);
     view.setBounds({
@@ -255,7 +385,9 @@ function syncFullscreen(): void {
 }
 
 function handleHtmlFullscreen(tab: Tab, entered: boolean): void {
-  fullscreenDebug('html-event', { tabId: tab.id, entered, url: tab.wc.getURL() });
+  // NOTE: never touch tab.wc here — this fires from the 'destroyed' handler
+  // when a fullscreen tab is closed, and the webContents is already gone.
+  fullscreenDebug('html-event', { tabId: tab.id, entered });
   fullscreen?.track(tab, entered);
   syncFullscreen();
 }
@@ -347,6 +479,10 @@ function setPopover(kind: PopoverKind | null): void {
   layoutPopover();
   void view.webContents
     .loadFile(rendererPath(), { search: `?overlay=${kind}` })
+    .then(() => {
+      // The find bar must accept typing immediately (Ctrl+F from the page).
+      if (kind === 'find' && popoverView === view) view.webContents.focus();
+    })
     .catch((err: unknown) => {
       console.error(`[ui] failed to load ${kind} popover:`, err);
       if (popoverView === view) disposePopover();
@@ -819,9 +955,18 @@ app.whenReady().then(async () => {
   }
 
   settings = await loadSettingsFromDisk();
+  historyEntries = await loadHistoryFromDisk();
 
-  blocker = new AdBlocker(() => settings, bundled);
+  blocker = new AdBlocker(
+    () => settings,
+    bundled,
+    path.join(app.getPath('userData'), 'adblocker.log'),
+  );
   blocker.setOnChange(scheduleBroadcast);
+  // Attribute blocked requests to their tab (drives the per-tab badge).
+  blocker.setOnTabBlocked((webContentsId) => {
+    manager?.noteBlockedForWebContents(webContentsId);
+  });
   // Start the maintained filter refresh in parallel with the UI startup. A
   // bundled snapshot and the domain fallback are installed first, so ads are
   // blocked even while the remote lists are still downloading or unavailable.
@@ -881,6 +1026,69 @@ app.whenReady().then(async () => {
     },
     onContextMenu: (tab, params) => pageContextMenu(tab, params),
     onHtmlFullscreen: (tab, entered) => handleHtmlFullscreen(tab, entered),
+    onHistory: (url, title) => recordHistory(url, title),
+    onActivity: (tab) => {
+      if (manager?.active === tab) noteActivity();
+    },
+    onFoundInPage: (tab, result) => {
+      if (manager?.active !== tab) return;
+      findState = {
+        ...findState,
+        matches: result.matches,
+        activeMatch: result.activeMatchOrdinal,
+      };
+      scheduleBroadcast();
+    },
+    onShortcut: (tab, name) => {
+      if (!manager || manager.active !== tab) return;
+      switch (name) {
+        case 'find':
+          if (popoverKind === 'find') {
+            findState = { open: false, text: '', matches: 0, activeMatch: 0 };
+            manager.stopFindInActive();
+            setPopover(null);
+          } else {
+            setPopover('find');
+          }
+          break;
+        case 'reload':
+          manager.reload();
+          break;
+        case 'newTab':
+          dismissRestoreOffer();
+          manager.createTab();
+          break;
+        case 'closeTab':
+          dismissRestoreOffer();
+          manager.close(tab.id);
+          break;
+        case 'focusAddress':
+          if (mainWindow && !mainWindow.isDestroyed()) {
+            mainWindow.webContents.send('browser:shortcut', 'focus-address');
+          }
+          break;
+        case 'bookmark':
+          bookmarkCurrentTab(tab);
+          break;
+        case 'zoomIn':
+          setNotice(`Zoom ${Math.round(manager.zoomActive('in') * 100)}%`);
+          break;
+        case 'zoomOut':
+          setNotice(`Zoom ${Math.round(manager.zoomActive('out') * 100)}%`);
+          break;
+        case 'zoomReset':
+          manager.zoomActive('reset');
+          setNotice('Zoom 100%');
+          break;
+        case 'escape':
+          if (popoverKind === 'find') {
+            findState = { open: false, text: '', matches: 0, activeMatch: 0 };
+            manager.stopFindInActive();
+            setPopover(null);
+          }
+          break;
+      }
+    },
     getCosmeticFilter: (hostname) => {
       if (!settings.blockEnabled || !settings.cosmeticFiltering || !blocker) {
         return { enabled: false, hosts: [] };
@@ -935,6 +1143,11 @@ app.whenReady().then(async () => {
         console.error('[download] save dialog failed:', err);
         item.cancel();
       });
+  });
+
+  // Activity pings from the chrome renderer (mouse/keyboard over the UI).
+  ipcMain.on('ui:activity', () => {
+    noteActivity();
   });
 
   // Long-press reports from the injected page script (one-way, validated).
@@ -993,6 +1206,11 @@ app.whenReady().then(async () => {
       settings = applySettingsUpdate(settings, update);
       persistSettingsDebounced();
       blocker?.refresh();
+      if (!settings.autoHideChrome && chromeHidden) {
+        chromeHidden = false;
+        layoutPageView();
+      }
+      resetChromeAutoHide();
       broadcastState();
       return { ...settings };
     },
@@ -1023,6 +1241,58 @@ app.whenReady().then(async () => {
     setPopover,
     restoreTabs: restorePreviousTabs,
     dismissRestoreTabs: dismissRestoreOffer,
+    duplicateTab: (id: string) => {
+      manager?.duplicateTab(id);
+    },
+    togglePin: (id: string) => {
+      manager?.togglePin(id);
+    },
+    toggleMute: (id: string) => {
+      manager?.toggleMute(id);
+    },
+    closeOthers: (id: string) => {
+      dismissRestoreOffer();
+      manager?.closeOthers(id);
+    },
+    moveTab: (id: string, index: number) => {
+      manager?.moveTab(id, index);
+    },
+    find: (text: string, forward: boolean, findNext: boolean) => {
+      findState = { open: text !== '', text, matches: 0, activeMatch: 0 };
+      manager?.findInActive(text, forward, findNext);
+      scheduleBroadcast();
+    },
+    stopFind: () => {
+      findState = { open: false, text: '', matches: 0, activeMatch: 0 };
+      manager?.stopFindInActive();
+      scheduleBroadcast();
+    },
+    zoom: (direction) => {
+      const factor = manager?.zoomActive(direction) ?? 1;
+      setNotice(`Zoom ${Math.round(factor * 100)}%`);
+      return factor;
+    },
+    getHistory: () => [...historyEntries],
+    clearHistory: () => {
+      historyEntries = [];
+      persistHistoryDebounced();
+      setNotice('Browsing history cleared');
+    },
+    updateFilters: async () => {
+      const status = (await blocker?.forceUpdate()) ?? {
+        source: 'custom-only' as const,
+        updatedAt: null,
+        updating: false,
+      };
+      setNotice(
+        status.updating
+          ? 'Filter update in progress…'
+          : blocker?.warning
+            ? blocker.warning
+            : 'Filters are up to date.',
+      );
+      return status;
+    },
   });
 
   createWindow();
@@ -1061,5 +1331,14 @@ app.on('will-quit', () => {
     fs.writeFileSync(settingsPath(), JSON.stringify(settings, null, 2), 'utf8');
   } catch (err) {
     console.error('[settings] failed to persist on quit:', err);
+  }
+  if (historySaveTimer) {
+    clearTimeout(historySaveTimer);
+    historySaveTimer = null;
+  }
+  try {
+    fs.writeFileSync(historyPath(), JSON.stringify(historyEntries), 'utf8');
+  } catch (err) {
+    console.error('[history] failed to persist on quit:', err);
   }
 });

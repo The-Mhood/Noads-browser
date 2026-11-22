@@ -1,0 +1,9 @@
+node_modules/
+dist/
+dist-electron/
+windows-release/
+release/
+.smoke-profile/
+smoke/
+*.log
+.DS_Store

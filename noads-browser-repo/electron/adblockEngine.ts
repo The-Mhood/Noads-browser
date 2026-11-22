@@ -11,6 +11,8 @@ export type FilterEngineSource = 'network' | 'cache' | 'stale-cache';
 export interface LoadedFilterEngine {
   engine: ElectronBlocker;
   source: FilterEngineSource;
+  /** Epoch ms when the active lists were generated/cached. */
+  generatedAt: number | null;
   warning: string | null;
 }
 
@@ -114,8 +116,12 @@ async function cacheExists(paths: FilterCachePaths): Promise<boolean> {
  * Load maintained ads/tracking/annoyance/cosmetic filters. Fresh serialized engines are
  * used immediately; stale caches trigger a network refresh and are retained as
  * an explicit offline fallback instead of silently pretending to be current.
+ * `force` skips the freshness check (user-requested "update now").
  */
-export async function loadFilterEngine(userDataPath: string): Promise<LoadedFilterEngine> {
+export async function loadFilterEngine(
+  userDataPath: string,
+  options: { force?: boolean } = {},
+): Promise<LoadedFilterEngine> {
   const paths = filterCachePaths(userDataPath);
   const metadata = await readMetadata(paths.metadata);
   const hasCache = await cacheExists(paths);
@@ -123,11 +129,12 @@ export async function loadFilterEngine(userDataPath: string): Promise<LoadedFilt
     ElectronBlocker: EngineClass;
   };
 
-  if (hasCache && metadata && isFilterCacheFresh(metadata.generatedAt)) {
+  if (!options.force && hasCache && metadata && isFilterCacheFresh(metadata.generatedAt)) {
     try {
       return {
         engine: await readEngine(paths.engine, ElectronBlocker),
         source: 'cache',
+        generatedAt: metadata.generatedAt,
         warning: null,
       };
     } catch (err) {
@@ -153,13 +160,14 @@ export async function loadFilterEngine(userDataPath: string): Promise<LoadedFilt
       console.error('[adblocker] failed to cache maintained filters:', err);
     }
 
-    return { engine, source: 'network', warning };
+    return { engine, source: 'network', generatedAt, warning };
   } catch (networkErr) {
     if (hasCache) {
       try {
         return {
           engine: await readEngine(paths.engine, ElectronBlocker),
           source: 'stale-cache',
+          generatedAt: metadata?.generatedAt ?? null,
           warning: `Maintained filter lists could not be refreshed; using the cached lists from ${
             metadata ? new Date(metadata.generatedAt).toISOString() : 'an unknown date'
           }.`,

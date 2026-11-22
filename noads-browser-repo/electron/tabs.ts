@@ -27,6 +27,19 @@ import { buildCosmeticCSS, buildPopupFilterJS } from './cosmeticFilters';
 import { FULLSCREEN_BRIDGE_INJECT } from './fullscreenBridge';
 import { LONGPRESS_INJECT } from './longpress';
 
+/** Shortcuts intercepted at the page level (before the page sees them). */
+export type BrowserShortcut =
+  | 'find'
+  | 'reload'
+  | 'newTab'
+  | 'closeTab'
+  | 'focusAddress'
+  | 'bookmark'
+  | 'zoomIn'
+  | 'zoomOut'
+  | 'zoomReset'
+  | 'escape';
+
 export interface TabDeps {
   preloadPath: string;
   blocker: AdBlocker;
@@ -43,8 +56,16 @@ export interface TabDeps {
   onContextMenu: (tab: Tab, params: Electron.ContextMenuParams) => void;
   /** A page element entered/left HTML5 fullscreen (e.g. a movie player). */
   onHtmlFullscreen: (tab: Tab, entered: boolean) => void;
+  /** Record a settled page visit into browsing history. */
+  onHistory: (url: string, title: string) => void;
+  /** Chromium found-in-page result for the find bar. */
+  onFoundInPage: (tab: Tab, result: Electron.FoundInPageResult) => void;
+  /** Browser-level shortcut pressed while the page has focus. */
+  onShortcut: (tab: Tab, name: BrowserShortcut) => void;
   /** Current cosmetic-filtering policy + effective block host list. */
   getCosmeticFilter: (hostname: string) => { enabled: boolean; hosts: string[] };
+  /** User activity inside this tab's page (drives chrome auto-hide). */
+  onActivity: (tab: Tab) => void;
 }
 
 export interface ViewHost {
@@ -91,8 +112,18 @@ export class Tab {
   readonly id: string;
   readonly view: WebContentsView;
   mode: 'home' | 'web' | 'error' = 'home';
+  /** Pinned tabs stay leftmost and survive "close others". */
+  pinned = false;
+  /** True while this tab is playing media (reported by Chromium). */
+  audible = false;
+  /** True when the user muted this tab. */
+  muted = false;
+  /** Requests the blocker stopped on this tab (attributed by webContents id). */
+  blockedCount = 0;
 
   private error: BrowserError | null = null;
+  /** Best-known favicon URL for the current page. */
+  private favicon = '';
   /** Display text for the in-flight navigation (settles on did-navigate). */
   private pendingDisplay: string | null = null;
   /** Set for search navigations; kept until the next non-search navigation. */
@@ -177,7 +208,53 @@ export class Tab {
       this.deps.onBroadcast();
     });
 
-    wc.on('did-stop-loading', () => this.deps.onBroadcast());
+    wc.on('did-stop-loading', () => {
+      const url = wc.getURL();
+      if (/^https?:/i.test(url)) this.deps.onHistory(url, wc.getTitle());
+      this.deps.onBroadcast();
+    });
+
+    wc.on('found-in-page', (_e, result) => {
+      this.deps.onFoundInPage(this, result);
+    });
+
+    // Any mouse/keyboard/touch input in the page counts as user activity
+    // for the chrome auto-hide timer.
+    wc.on('input-event', () => {
+      this.deps.onActivity(this);
+    });
+
+    // Browser shortcuts while the PAGE has focus. The chrome renderer only
+    // sees keydown when the chrome itself is focused, so navigation-level
+    // shortcuts must be intercepted here, before the page consumes them.
+    wc.on('before-input-event', (event, input) => {
+      if (input.type !== 'keyDown') return;
+      const mod = process.platform === 'darwin' ? input.meta : input.control;
+      const key = (input.key ?? '').toLowerCase();
+      let shortcut: BrowserShortcut | null = null;
+      if (mod && !input.shift && !input.alt) {
+        if (key === 'f') shortcut = 'find';
+        else if (key === 'r') shortcut = 'reload';
+        else if (key === 't') shortcut = 'newTab';
+        else if (key === 'w') shortcut = 'closeTab';
+        else if (key === 'l') shortcut = 'focusAddress';
+        else if (key === 'd') shortcut = 'bookmark';
+        else if (key === '=' || key === '+') shortcut = 'zoomIn';
+        else if (key === '-') shortcut = 'zoomOut';
+        else if (key === '0') shortcut = 'zoomReset';
+      } else if (key === 'escape' && !mod) {
+        shortcut = 'escape';
+      }
+      if (shortcut === null) return;
+      if (shortcut === 'escape') {
+        // Never consume Esc: pages and players rely on it (modals, PiP,
+        // fullscreen). We only mirror it so an open find bar closes too.
+        this.deps.onShortcut(this, 'escape');
+        return;
+      }
+      event.preventDefault();
+      this.deps.onShortcut(this, shortcut);
+    });
 
     wc.on('did-navigate', (_e, url) => {
       if (/^https?:/i.test(url)) {
@@ -194,6 +271,29 @@ export class Tab {
     });
 
     wc.on('page-title-updated', () => this.deps.onBroadcast());
+
+    // Favicons: keep the freshest icon Chromium reports for the page.
+    wc.on('page-favicon-updated', (_e, favicons) => {
+      const next = favicons.find((f) => typeof f === 'string' && f.startsWith('http')) ?? '';
+      if (next && next !== this.favicon) {
+        this.favicon = next;
+        this.deps.onBroadcast();
+      }
+    });
+
+    // Media activity drives the tab-strip audio indicator.
+    wc.on('media-started-playing', () => {
+      if (!this.audible) {
+        this.audible = true;
+        this.deps.onBroadcast();
+      }
+    });
+    wc.on('media-paused', () => {
+      if (this.audible) {
+        this.audible = false;
+        this.deps.onBroadcast();
+      }
+    });
 
     // Long-press copy/download: inject once per fresh main-frame document
     // (Electron ≥32 emits dom-ready for the main frame only; the snippet is
@@ -226,7 +326,9 @@ export class Tab {
             console.error('[cosmetic] supplemental CSS injection failed:', err),
           );
         }
-        wc.executeJavaScript(buildPopupFilterJS(cosmetic.hosts)).catch((err: unknown) =>
+        wc.executeJavaScript(
+          buildPopupFilterJS(cosmetic.hosts, this.deps.getSettings().youtubeCompat),
+        ).catch((err: unknown) =>
           console.error('[cosmetic] supplemental popup filter injection failed:', err),
         );
       }
@@ -355,6 +457,20 @@ export class Tab {
     });
   }
 
+  /** Increment this tab's blocked-request counter (called by main). The
+   *  blocker's throttled change callback pushes the update to the UI. */
+  noteBlocked(): void {
+    this.blockedCount += 1;
+  }
+
+  /** Toggle tab audio mute; returns the new muted state. */
+  toggleMute(): boolean {
+    this.muted = !this.muted;
+    this.wc.setAudioMuted(this.muted);
+    this.deps.onBroadcast();
+    return this.muted;
+  }
+
   /** Navigate this tab. HOME_URL = internal home (never hits the network). */
   navigate(url: string, searchQuery: string | null): void {
     if (url === HOME_URL) {
@@ -400,6 +516,11 @@ export class Tab {
       isLoading: wc.isLoading() && !this.error,
       canGoBack: wc.canGoBack(),
       canGoForward: wc.canGoForward(),
+      favicon: this.favicon,
+      blockedCount: this.blockedCount,
+      pinned: this.pinned,
+      audible: this.audible,
+      muted: this.muted,
       error: this.error,
     };
   }
@@ -458,6 +579,93 @@ export class TabManager {
     this.activate(tab.id);
     this.persist();
     return tab;
+  }
+
+  /** Open a copy of a tab next to the original. */
+  duplicateTab(id: string): Tab | null {
+    const src = this.tabs.find((t) => t.id === id);
+    if (!src) return null;
+    const copy = this.createTab(src.currentUrl === HOME_URL ? HOME_URL : src.currentUrl);
+    // Move the duplicate next to its source instead of leaving it last.
+    const from = this.tabs.indexOf(copy);
+    const to = this.tabs.indexOf(src) + 1;
+    this.tabs.splice(from, 1);
+    this.tabs.splice(to, 0, copy);
+    this.deps.onBroadcast();
+    return copy;
+  }
+
+  togglePin(id: string): void {
+    const tab = this.tabs.find((t) => t.id === id);
+    if (!tab) return;
+    tab.pinned = !tab.pinned;
+    // Keep pinned tabs grouped at the front, preserving relative order.
+    const pinned = this.tabs.filter((t) => t.pinned);
+    const rest = this.tabs.filter((t) => !t.pinned);
+    this.tabs = [...pinned, ...rest];
+    this.deps.onBroadcast();
+  }
+
+  toggleMute(id: string): void {
+    this.tabs.find((t) => t.id === id)?.toggleMute();
+  }
+
+  /** Close every tab except `id`; pinned tabs are kept (browser convention). */
+  closeOthers(id: string): void {
+    const closing = this.tabs.filter((t) => t.id !== id && !t.pinned);
+    for (const tab of closing) {
+      this.tabs.splice(this.tabs.indexOf(tab), 1);
+      this.detach(tab.view);
+      tab.destroy();
+    }
+    if (!this.tabs.some((t) => t.id === this.activeId)) {
+      this.activeId = null;
+      this.activate(id);
+    }
+    this.persist();
+    this.deps.onBroadcast();
+  }
+
+  /** Drag-reorder: move tab `id` to `index` (clamped). */
+  moveTab(id: string, index: number): void {
+    const from = this.tabs.findIndex((t) => t.id === id);
+    if (from === -1) return;
+    const to = Math.max(0, Math.min(index, this.tabs.length - 1));
+    if (to === from) return;
+    const [tab] = this.tabs.splice(from, 1);
+    this.tabs.splice(to, 0, tab);
+    this.deps.onBroadcast();
+  }
+
+  /** Attribute a blocked request (by WebContents id) to its tab. */
+  noteBlockedForWebContents(webContentsId: number | undefined): void {
+    if (webContentsId === undefined) return;
+    const tab = this.tabs.find((t) => t.wc.id === webContentsId);
+    tab?.noteBlocked();
+  }
+
+  /** Find-in-page on the active tab. */
+  findInActive(text: string, forward: boolean, findNext: boolean): void {
+    const wc = this.active.wc;
+    if (text === '') {
+      wc.stopFindInPage('clearSelection');
+      return;
+    }
+    wc.findInPage(text, { forward, findNext });
+  }
+
+  stopFindInActive(): void {
+    this.active.wc.stopFindInPage('clearSelection');
+  }
+
+  /** Zoom the active tab by one step; returns the new factor (1 = 100%). */
+  zoomActive(direction: 'in' | 'out' | 'reset'): number {
+    const wc = this.active.wc;
+    const next =
+      direction === 'reset' ? 1 : wc.getZoomFactor() * (direction === 'in' ? 1.2 : 1 / 1.2);
+    const clamped = Math.min(5, Math.max(0.25, next));
+    wc.setZoomFactor(clamped);
+    return clamped;
   }
 
   activate(id: string): void {

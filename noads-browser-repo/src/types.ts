@@ -7,9 +7,13 @@ export type {
   BrowserError,
   BrowserState,
   BlockState,
+  FilterEngineStatus,
+  FindState,
+  HistoryEntry,
   IpcResult,
   NavigationTarget,
   Notice,
+  PopoverKind,
   Settings,
   TabState,
 } from '../shared/types';

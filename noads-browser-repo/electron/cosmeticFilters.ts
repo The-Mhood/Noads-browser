@@ -109,7 +109,7 @@ const SAFE_HOST_RE = /^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-
  * script uses it to recognize ad iframes inside popups. Pure string
  * building; the script is idempotent and ES5-safe for any page.
  */
-export function buildPopupFilterJS(blockedHosts: string[]): string {
+export function buildPopupFilterJS(blockedHosts: string[], youtubeCompat = false): string {
   const hosts = blockedHosts.filter(
     (h): h is string => typeof h === 'string' && h.length > 0 && h.length <= 253 && SAFE_HOST_RE.test(h),
   );
@@ -117,6 +117,12 @@ export function buildPopupFilterJS(blockedHosts: string[]): string {
   if (window.__adfPopupFilter) return;
   window.__adfPopupFilter = true;
   var AD_HOSTS = ${JSON.stringify(hosts)};
+    // Compatibility mode: rely on the maintained engine alone for YouTube.
+    var COMPAT = ${JSON.stringify(youtubeCompat)};
+    var IS_YT = /(^|\\.)youtube\\.com$/i.test(location.hostname);
+    if (COMPAT && IS_YT) return;
+    var lastScanAt = 0;
+    var lastYtStepAt = 0;
 
   function isAdHost(u) {
     var h;
@@ -176,7 +182,8 @@ export function buildPopupFilterJS(blockedHosts: string[]): string {
       /turn\\s+off\\s+ads|ads?\\s+settings|backup\\s+domains?|over\\s*18|click\\s+.*(allow|enable)/i.test(el.textContent || ''));
   }
 
-  function scan() {
+  // Cheap, selector-targeted overlay pass — safe to run on every site.
+  function scanOverlays() {
     if (!document.body) return;
     var els = document.body.querySelectorAll(
       '[id*="popup"],[class*="popup"],' +
@@ -191,9 +198,16 @@ export function buildPopupFilterJS(blockedHosts: string[]): string {
       var el = els[i];
       if (shouldHideOverlay(el)) hideElement(el);
     }
+  }
 
-    // Some ad sites use generated class names. Inspect text first, then do
-    // the more expensive layout check only for suspicious candidates.
+  // Expensive full-DOM sweep for generated class names. Never run on
+  // YouTube: its DOM mutates constantly and this pass alone was making pages
+  // crawl. Other sites get it at most once every 1.5 s.
+  function scanGenerated() {
+    if (IS_YT || !document.body) return;
+    var now = Date.now();
+    if (now - lastScanAt < 1500) return;
+    lastScanAt = now;
     var all = document.body.querySelectorAll('*');
     var limit = Math.min(all.length, 5000);
     for (var j = 0; j < limit; j++) {
@@ -208,9 +222,15 @@ export function buildPopupFilterJS(blockedHosts: string[]): string {
     }
   }
 
+  function scan() {
+    scanOverlays();
+    scanGenerated();
+  }
+
   var youtubeSavedMuted = null;
   var youtubeSavedVolume = null;
   var youtubeMutedByAdf = false;
+  var youtubeStuckSince = 0;
 
   function youtubeVisible(el) {
     if (!el) return false;
@@ -258,7 +278,10 @@ export function buildPopupFilterJS(blockedHosts: string[]): string {
   }
 
   function youtubeAdStep() {
-    if (!/(^|\\.)youtube\\.com$/i.test(location.hostname)) return;
+    if (!IS_YT) return;
+    var now = Date.now();
+    if (now - lastYtStepAt < 400) return; // bound CPU on a mutating page
+    lastYtStepAt = now;
     var player = document.querySelector('#movie_player');
     if (!player) return;
     var showing = player.classList.contains('ad-showing') ||
@@ -316,6 +339,25 @@ export function buildPopupFilterJS(blockedHosts: string[]): string {
       video.setAttribute('data-adf-muted-ad', '1');
       youtubeMutedByAdf = true;
     }
+
+    // Playback recovery: when an ad request was blocked at the network level,
+    // some player revisions sit in the ad state with a stalled video (paused
+    // or no data) and never advance to the content. After 7 s of a stalled
+    // ad-state player, nudge playback once — never seek, never reload.
+    if (video && (video.paused || video.readyState < 2)) {
+      if (!youtubeStuckSince) youtubeStuckSince = Date.now();
+      if (Date.now() - youtubeStuckSince > 7000) {
+        youtubeStuckSince = 0;
+        try {
+          var playResult = video.play();
+          if (playResult && typeof playResult.catch === 'function') {
+            playResult.catch(function () {});
+          }
+        } catch (e) { /* autoplay policy may refuse; the next interval retries */ }
+      }
+    } else {
+      youtubeStuckSince = 0;
+    }
   }
 
   var timer = 0;
@@ -329,8 +371,8 @@ export function buildPopupFilterJS(blockedHosts: string[]): string {
     schedule(400);
     youtubeAdStep();
   }, { passive: true });
-  if (/(^|\\.)youtube\\.com$/i.test(location.hostname)) {
-    setInterval(youtubeAdStep, 250);
+  if (IS_YT) {
+    setInterval(youtubeAdStep, 500);
   }
   try {
     var mo = new MutationObserver(function () {

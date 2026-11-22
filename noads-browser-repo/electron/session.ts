@@ -6,8 +6,9 @@
  * on top of it.
  */
 import { session } from 'electron';
+import * as fsSync from 'node:fs';
 import type { ElectronBlocker } from '@ghostery/adblocker-electron';
-import type { BlockedEntry, Settings } from '../shared/types';
+import type { BlockedEntry, FilterEngineStatus, Settings } from '../shared/types';
 import { makeMatcher, type DomainMatcher } from './blocklist';
 import { loadBundledFilterEngine, loadFilterEngine } from './adblockEngine';
 import { buildDomainFilterRules } from './adblockRules';
@@ -56,6 +57,25 @@ export class AdBlocker {
   private appliedCustomRules: string[] = [];
   private fallbackInstalled = false;
   private permissionHandlerInstalled = false;
+  private userDataPath: string | null = null;
+  private engineStatus: FilterEngineStatus = {
+    source: 'custom-only',
+    updatedAt: null,
+    updating: false,
+  };
+  /** Notified (with the WebContents id) on every blocked request, so the
+   *  main process can attribute it to a tab. */
+  private onTabBlocked: ((webContentsId: number | undefined) => void) | null = null;
+
+  /** Live provenance of the maintained filter engine. */
+  get filterStatus(): FilterEngineStatus {
+    return { ...this.engineStatus };
+  }
+
+  /** Register the per-tab attribution hook (called very frequently). */
+  setOnTabBlocked(cb: ((webContentsId: number | undefined) => void) | null): void {
+    this.onTabBlocked = cb;
+  }
 
   private readonly fallbackRequestHandler = (
     details: Electron.OnBeforeRequestListenerDetails,
@@ -75,8 +95,10 @@ export class AdBlocker {
         callback({});
         return;
       }
-      if (isYouTubeAdRequest(details)) {
-        this.recordBlocked(details.url, host);
+      // Compatibility mode leaves first-party YouTube interception to the
+      // maintained engine alone; some players stall when ad_break is cut.
+      if (!this.getSettings().youtubeCompat && isYouTubeAdRequest(details)) {
+        this.recordBlocked(details.url, host, details.webContentsId);
         callback({ cancel: true });
         return;
       }
@@ -84,7 +106,7 @@ export class AdBlocker {
         callback({});
         return;
       }
-      this.recordBlocked(details.url, host);
+      this.recordBlocked(details.url, host, details.webContentsId);
       callback({ cancel: true });
     } catch (err) {
       // Never take down the request pipeline: log loudly, allow the request.
@@ -93,10 +115,32 @@ export class AdBlocker {
     }
   };
 
+  private readonly logPath: string | null;
+
   constructor(
     private readonly getSettings: () => Settings,
     private readonly bundledDomains: string[],
-  ) {}
+    logPath: string | null = null,
+  ) {
+    this.logPath = logPath;
+  }
+
+  /** Append one diagnostic line to a userData log file so release builds
+   *  (which have no console) can report what the blocker actually did. */
+  private logDiag(...values: unknown[]): void {
+    const line =
+      `[${new Date().toISOString()}] ` +
+      values.map((v) => (typeof v === 'string' ? v : JSON.stringify(v))).join(' ') +
+      '\n';
+    console.log('[adblocker]', ...values);
+    if (this.logPath) {
+      try {
+        fsSync.appendFileSync(this.logPath, line);
+      } catch {
+        /* diagnostics must never break startup */
+      }
+    }
+  }
 
   get enabled(): boolean {
     return this.enabledFlag;
@@ -121,11 +165,20 @@ export class AdBlocker {
     // Never leave a new installation unprotected while lists are downloading.
     this.installFallbackListener();
     this.setEnabled(this.getSettings().blockEnabled);
+    this.userDataPath = userDataPath;
+    this.logDiag(
+      `install start; bundledDomains=${this.bundledDomains.length}`,
+      bundledEnginePath ? `bundledEngine=${bundledEnginePath}` : 'no bundled engine path',
+    );
 
     if (bundledEnginePath) {
       const bundledEngine = await loadBundledFilterEngine(bundledEnginePath);
       if (bundledEngine) {
+        this.engineStatus = { source: 'bundled', updatedAt: null, updating: true };
         this.activateEngine(bundledEngine);
+        this.logDiag('bundled engine activated');
+      } else {
+        this.logDiag('bundled engine FAILED to load (check adblocker.log)');
       }
     }
 
@@ -133,10 +186,17 @@ export class AdBlocker {
       const loaded = await loadFilterEngine(userDataPath);
       this.activateEngine(loaded.engine);
       this.warning = loaded.warning;
+      this.engineStatus = {
+        source: loaded.source,
+        updatedAt: loaded.generatedAt,
+        updating: false,
+      };
+      this.logDiag(`maintained engine active (source=${loaded.source})`);
       if (loaded.source === 'stale-cache' && this.warning === null) {
         this.warning = 'Maintained filters are being served from a stale cache.';
       }
     } catch (err) {
+      this.engineStatus = { ...this.engineStatus, updating: false };
       if (this.engine) {
         // A bundled or stale engine is already active, so keep it serving
         // requests instead of dropping all filtering when refresh fails.
@@ -146,14 +206,58 @@ export class AdBlocker {
         this.engine = null;
         this.warning =
           'Maintained ad filters could not be loaded; only the bundled and custom domain rules are active.';
+        this.engineStatus = { source: 'custom-only', updatedAt: null, updating: false };
         this.installFallbackListener();
         this.setEnabled(this.getSettings().blockEnabled);
       }
       console.error('[adblocker] maintained filter engine failed to load:', err);
       console.error('[adblocker] fallback details:', describeError(err));
+      this.logDiag('maintained engine load FAILED:', describeError(err));
+    }
+
+    // Verify at startup whether session-level blocking is actually live, and
+    // log it. This turns "ads are showing" reports into actionable data.
+    try {
+      const enabledInSession = this.engine
+        ? this.engine.isBlockingEnabled(session.defaultSession)
+        : false;
+      this.logDiag(
+        `startup: engine=${this.engine ? 'yes' : 'no'} blockingInSession=${enabledInSession} enabledFlag=${this.enabledFlag} fallbackInstalled=${this.fallbackInstalled} source=${this.engineStatus.source}`,
+      );
+    } catch (err) {
+      this.logDiag('startup self-check failed:', describeError(err));
     }
 
     this.onChange?.();
+  }
+
+  /**
+   * User-requested "update filters now": bypasses the weekly freshness check
+   * and downloads the current maintained lists. Never removes protection
+   * while updating — the current engine keeps serving until the new one is
+   * ready. Resolves to the resulting status; on failure the previous engine
+   * stays active and a warning explains what happened.
+   */
+  async forceUpdate(): Promise<FilterEngineStatus> {
+    if (this.engineStatus.updating || !this.userDataPath) return this.filterStatus;
+    this.engineStatus = { ...this.engineStatus, updating: true };
+    this.onChange?.();
+    try {
+      const loaded = await loadFilterEngine(this.userDataPath, { force: true });
+      this.activateEngine(loaded.engine);
+      this.warning = loaded.warning;
+      this.engineStatus = {
+        source: loaded.source,
+        updatedAt: loaded.generatedAt,
+        updating: false,
+      };
+    } catch (err) {
+      this.engineStatus = { ...this.engineStatus, updating: false };
+      this.warning = `Filter update failed (${describeError(err)}); the previous lists remain active.`;
+      console.error('[adblocker] manual filter update failed:', err);
+    }
+    this.onChange?.();
+    return this.filterStatus;
   }
 
   /** (Re)build custom matchers and apply settings changes immediately. */
@@ -247,13 +351,13 @@ export class AdBlocker {
         callback({});
         return;
       }
-      if (host !== null && isYouTubeAdRequest(details)) {
-        this.recordBlocked(details.url, host);
+      if (host !== null && !this.getSettings().youtubeCompat && isYouTubeAdRequest(details)) {
+        this.recordBlocked(details.url, host, details.webContentsId);
         callback({ cancel: true });
         return;
       }
       if (host !== null && details.resourceType === 'mainFrame' && this.blockMatcher.test(host)) {
-        this.recordBlocked(details.url, host);
+        this.recordBlocked(details.url, host, details.webContentsId);
         callback({ cancel: true });
         return;
       }
@@ -274,7 +378,7 @@ export class AdBlocker {
     };
 
     engine.on('request-blocked', (request) => {
-      if (this.enabledFlag) this.recordBlocked(request.url, request.hostname);
+      if (this.enabledFlag) this.recordBlocked(request.url, request.hostname, request.tabId);
     });
   }
 
@@ -350,7 +454,7 @@ export class AdBlocker {
     this.permissionHandlerInstalled = true;
   }
 
-  private recordBlocked(url: string, host: string): void {
+  private recordBlocked(url: string, host: string, webContentsId?: number): void {
     const at = Date.now();
     const normalizedHost = host.trim().toLowerCase() || hostOf(url) || 'unknown host';
     this.stats.count += 1;
@@ -361,6 +465,13 @@ export class AdBlocker {
     ].slice(0, 50);
     this.lastBlockedUrl = url;
     this.lastBlockedAt = at;
+    // Log blocked YouTube requests: video-playback failures on macOS are
+    // almost always an over-blocked media/player request, and this makes the
+    // culprit visible in adblocker.log.
+    if (/(^|\.)youtube\.com$/i.test(normalizedHost) || /(^|\.)googlevideo\.com$/i.test(normalizedHost) || /(^|\.)youtubei\.googleapis\.com$/i.test(normalizedHost)) {
+      this.logDiag(`blocked YouTube request: ${url.slice(0, 160)}`);
+    }
+    this.onTabBlocked?.(webContentsId);
     this.onChange?.();
   }
 }
