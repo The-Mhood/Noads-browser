@@ -63,6 +63,9 @@ public class TvPointer {
         cursor.setLayoutParams(new ViewGroup.LayoutParams(size, size));
         cursor.setVisibility(View.GONE);
         root.addView(cursor);
+        // The WebView renders above siblings; the cursor must be on top.
+        cursor.bringToFront();
+        cursor.setElevation(1000f);
     }
 
     /** Show/hide the pointer with the chrome (header). */

@@ -46,7 +46,8 @@ public class TvActivity extends BrowserActivity {
 
         pointer = new TvPointer((ViewGroup) findViewById(android.R.id.content), webView);
         pointer.setChromeVisible(true);
-        pointer.center();
+        // Wait for layout before centering (width/height are 0 in onCreate).
+        findViewById(android.R.id.content).post(() -> pointer.center());
 
         wireButton(R.id.tv_btn_back, v -> { if (web.canGoBack()) web.goBack(); });
         wireButton(R.id.tv_btn_forward, v -> { if (web.canGoForward()) web.goForward(); });

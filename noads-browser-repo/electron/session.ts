@@ -465,6 +465,12 @@ export class AdBlocker {
     ].slice(0, 50);
     this.lastBlockedUrl = url;
     this.lastBlockedAt = at;
+    // Log blocked YouTube requests: video-playback failures on macOS are
+    // almost always an over-blocked media/player request, and this makes the
+    // culprit visible in adblocker.log.
+    if (/(^|\.)youtube\.com$/i.test(normalizedHost) || /(^|\.)googlevideo\.com$/i.test(normalizedHost) || /(^|\.)youtubei\.googleapis\.com$/i.test(normalizedHost)) {
+      this.logDiag(`blocked YouTube request: ${url.slice(0, 160)}`);
+    }
     this.onTabBlocked?.(webContentsId);
     this.onChange?.();
   }
