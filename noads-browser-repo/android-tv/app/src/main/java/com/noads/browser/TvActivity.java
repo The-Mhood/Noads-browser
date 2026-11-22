@@ -2,24 +2,36 @@ package com.noads.browser;
 
 import android.app.AlertDialog;
 import android.os.Bundle;
+import android.os.Handler;
+import android.os.Looper;
 import android.view.KeyEvent;
 import android.view.View;
+import android.view.ViewGroup;
 import android.webkit.WebView;
 import android.widget.Button;
 import android.widget.EditText;
 import android.widget.TextView;
 
 /**
- * 10-foot television front end. Everything is reachable with a D-pad remote:
- * buttons are focusable, the WebView scrolls with the directional pad, and
- * address entry goes through a dialog that brings up the leanback on-screen
- * keyboard. No touchscreen required.
+ * 10-foot television front end driven by a virtual pointer (TvPointer).
+ * The D-pad moves a smooth on-screen cursor; DPAD_CENTER clicks. The header
+ * auto-hides after a few seconds of inactivity and the pointer hides with it,
+ * reappearing the moment any direction is pressed. Holding a direction scrolls
+ * the page with accelerating speed; double-tap UP jumps to the top, double-tap
+ * DOWN to the bottom.
  */
 public class TvActivity extends BrowserActivity {
+
+    private static final long CHROME_AUTOHIDE_MS = 4000;
 
     private TextView addressLabel;
     private TextView shieldCount;
     private View topBar;
+    private TvPointer pointer;
+    private final Handler handler = new Handler(Looper.getMainLooper());
+    private boolean chromeVisible = true;
+
+    private final Runnable hideChromeTask = this::hideChrome;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -32,16 +44,17 @@ public class TvActivity extends BrowserActivity {
         WebView webView = findViewById(R.id.tv_web);
         attachBrowser(webView, topBar);
 
-        wireButton(R.id.tv_btn_back, v -> {
-            if (web.canGoBack()) web.goBack();
-        });
-        wireButton(R.id.tv_btn_forward, v -> {
-            if (web.canGoForward()) web.goForward();
-        });
+        pointer = new TvPointer((ViewGroup) findViewById(android.R.id.content), webView);
+        pointer.setChromeVisible(true);
+        pointer.center();
+
+        wireButton(R.id.tv_btn_back, v -> { if (web.canGoBack()) web.goBack(); });
+        wireButton(R.id.tv_btn_forward, v -> { if (web.canGoForward()) web.goForward(); });
         wireButton(R.id.tv_btn_reload, v -> web.reload());
         wireButton(R.id.tv_btn_home, v -> navigate("https://duckduckgo.com"));
         wireButton(R.id.tv_btn_address, v -> showAddressDialog());
 
+        scheduleChromeHide();
         navigate("https://duckduckgo.com");
     }
 
@@ -51,8 +64,27 @@ public class TvActivity extends BrowserActivity {
         b.setOnClickListener(listener);
     }
 
-    /** Remote-friendly URL entry: a dialog with an EditText; Android TV shows
-     *  its leanback on-screen keyboard automatically. */
+    private void scheduleChromeHide() {
+        handler.removeCallbacks(hideChromeTask);
+        handler.postDelayed(hideChromeTask, CHROME_AUTOHIDE_MS);
+    }
+
+    private void hideChrome() {
+        if (!chromeVisible) return;
+        chromeVisible = false;
+        topBar.animate().alpha(0f).setDuration(250).withEndAction(() -> topBar.setVisibility(View.GONE));
+        pointer.setChromeVisible(false);
+    }
+
+    private void showChrome() {
+        if (chromeVisible) { scheduleChromeHide(); return; }
+        chromeVisible = true;
+        topBar.setVisibility(View.VISIBLE);
+        topBar.animate().alpha(1f).setDuration(180);
+        pointer.setChromeVisible(true);
+        scheduleChromeHide();
+    }
+
     private void showAddressDialog() {
         final EditText input = new EditText(this);
         input.setSingleLine(true);
@@ -69,14 +101,27 @@ public class TvActivity extends BrowserActivity {
 
     @Override
     public boolean onKeyDown(int keyCode, KeyEvent event) {
-        // Keep DPAD focus usable: when nothing in the top bar is focused and
-        // the user presses UP, return focus to the toolbar.
-        if (keyCode == KeyEvent.KEYCODE_DPAD_UP && web != null && web.hasFocus()
-                && !web.canScrollVertically(-1)) {
-            findViewById(R.id.tv_btn_address).requestFocus();
-            return true;
+        // Any D-pad press wakes the chrome and feeds the pointer.
+        if (isDpad(keyCode)) {
+            showChrome();
+            if (pointer != null && pointer.onKey(keyCode, event)) return true;
         }
         return super.onKeyDown(keyCode, event);
+    }
+
+    @Override
+    public boolean onKeyUp(int keyCode, KeyEvent event) {
+        if (isDpad(keyCode) && pointer != null && pointer.onKey(keyCode, event)) return true;
+        return super.onKeyUp(keyCode, event);
+    }
+
+    private boolean isDpad(int keyCode) {
+        return keyCode == KeyEvent.KEYCODE_DPAD_UP
+                || keyCode == KeyEvent.KEYCODE_DPAD_DOWN
+                || keyCode == KeyEvent.KEYCODE_DPAD_LEFT
+                || keyCode == KeyEvent.KEYCODE_DPAD_RIGHT
+                || keyCode == KeyEvent.KEYCODE_DPAD_CENTER
+                || keyCode == KeyEvent.KEYCODE_ENTER;
     }
 
     @Override
@@ -88,5 +133,11 @@ public class TvActivity extends BrowserActivity {
     protected void onLocationChanged(String url) {
         String shown = url == null ? "" : url.replaceFirst("^https?://", "");
         runOnUiThread(() -> addressLabel.setText(shown));
+    }
+
+    @Override
+    protected void onDestroy() {
+        handler.removeCallbacksAndMessages(null);
+        super.onDestroy();
     }
 }
