@@ -6,7 +6,6 @@ import android.os.Handler;
 import android.os.Looper;
 import android.view.KeyEvent;
 import android.view.View;
-import android.view.ViewGroup;
 import android.webkit.WebView;
 import android.widget.Button;
 import android.widget.EditText;
@@ -44,10 +43,9 @@ public class TvActivity extends BrowserActivity {
         WebView webView = findViewById(R.id.tv_web);
         attachBrowser(webView, topBar);
 
-        pointer = new TvPointer((ViewGroup) getWindow().getDecorView(), webView);
-        pointer.setChromeVisible(true);
-        // Wait for layout before centering (width/height are 0 in onCreate).
-        getWindow().getDecorView().post(() -> pointer.center());
+        pointer = new TvPointer(webView);
+        // Inject the in-page cursor once the first page is ready.
+        webView.postDelayed(() -> pointer.show(), 600);
 
         wireButton(R.id.tv_btn_back, v -> { if (web.canGoBack()) web.goBack(); });
         wireButton(R.id.tv_btn_forward, v -> { if (web.canGoForward()) web.goForward(); });
@@ -81,7 +79,7 @@ public class TvActivity extends BrowserActivity {
         if (!chromeVisible) return;
         chromeVisible = false;
         topBar.animate().alpha(0f).setDuration(250).withEndAction(() -> topBar.setVisibility(View.GONE));
-        pointer.setChromeVisible(false);
+        pointer.hide();
     }
 
     private void showChrome() {
@@ -89,7 +87,7 @@ public class TvActivity extends BrowserActivity {
         chromeVisible = true;
         topBar.setVisibility(View.VISIBLE);
         topBar.animate().alpha(1f).setDuration(180);
-        pointer.setChromeVisible(true);
+        pointer.show();
         scheduleChromeHide();
     }
 
@@ -135,6 +133,16 @@ public class TvActivity extends BrowserActivity {
     @Override
     protected void onBlockedCountChanged(int count) {
         runOnUiThread(() -> shieldCount.setText(getString(R.string.blocked_count, count)));
+    }
+
+    @Override
+    protected void onPageReady() {
+        // Re-inject the cursor into each freshly loaded page, then show it if
+        // the chrome is currently visible.
+        if (pointer != null) {
+            pointer.inject();
+            if (chromeVisible) pointer.show();
+        }
     }
 
     @Override

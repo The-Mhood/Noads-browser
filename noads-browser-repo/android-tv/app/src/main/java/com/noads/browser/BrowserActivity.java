@@ -68,6 +68,11 @@ public abstract class BrowserActivity extends Activity {
             public void onPageStarted(WebView view, String url, Bitmap favicon) {
                 onLocationChanged(url);
             }
+
+            @Override
+            public void onPageFinished(WebView view, String url) {
+                onPageReady();
+            }
         });
 
         web.setWebChromeClient(new WebChromeClient() {
@@ -154,4 +159,7 @@ public abstract class BrowserActivity extends Activity {
 
     /** Called when the page URL changes (address display sync). */
     protected abstract void onLocationChanged(String url);
+
+    /** Called when a page finishes loading (subclasses re-inject page UI). */
+    protected void onPageReady() {}
 }
