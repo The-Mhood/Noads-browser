@@ -45,6 +45,21 @@ import { runSmoke } from './smoke';
 
 let fullscreen: FullscreenTracker | null = null;
 
+/** Fullscreen diagnosis goes to a dedicated log file so it's readable from a
+ *  packaged app (no console). */
+function logFullscreen(message: string): void {
+  const line = `[${new Date().toISOString()}] ${message}\n`;
+  console.log('[fullscreen]', message);
+  try {
+    fs.appendFileSync(
+      path.join(app.getPath('userData'), 'fullscreen.log'),
+      line,
+    );
+  } catch {
+    /* diagnostics must never break fullscreen */
+  }
+}
+
 function fullscreenDebug(...values: unknown[]): void {
   if (process.env.NOADS_FULLSCREEN_DEBUG === '1') {
     console.log('[fullscreen]', ...values);
@@ -300,14 +315,19 @@ function setNotice(message: string): void {
  * hide the very navigation surface the user needs while watching video.
  */
 function enterPlayerFullscreen(tab: Tab): void {
+  const ok = !!mainWindow && !mainWindow.isDestroyed() && !tab.wc.isDestroyed();
+  logFullscreen(`enterPlayerFullscreen tab=${tab.id} windowOk=${ok}`);
   fullscreenDebug('enter-player-fullscreen', { tabId: tab.id });
-  if (!mainWindow || mainWindow.isDestroyed() || tab.wc.isDestroyed()) return;
+  if (!ok || !mainWindow) return;
   if (manager?.active !== tab) manager?.activate(tab.id);
   mainWindow.show();
   mainWindow.focus();
   // Player fullscreen uses the existing browser window. This hides the
   // macOS menu bar without creating a second stagnant window.
-  if (!mainWindow.isFullScreen()) mainWindow.setFullScreen(true);
+  if (!mainWindow.isFullScreen()) {
+    mainWindow.setFullScreen(true);
+    logFullscreen(`setFullScreen(true) -> now=${mainWindow.isFullScreen()}`);
+  }
   layoutPageView();
 }
 
@@ -387,7 +407,7 @@ function syncFullscreen(): void {
 function handleHtmlFullscreen(tab: Tab, entered: boolean): void {
   // NOTE: never touch tab.wc here — this fires from the 'destroyed' handler
   // when a fullscreen tab is closed, and the webContents is already gone.
-  console.log(`[fullscreen] html event tab=${tab.id} entered=${entered}`);
+  logFullscreen(`html event tab=${tab.id} entered=${entered}`);
   fullscreenDebug('html-event', { tabId: tab.id, entered });
   fullscreen?.track(tab, entered);
   syncFullscreen();
@@ -1116,6 +1136,7 @@ app.whenReady().then(async () => {
     relayout: layoutPageView,
     enter: enterPlayerFullscreen,
     exit: exitPlayerFullscreen,
+    log: logFullscreen,
   });
 
   pendingRestoreTabs = settings.lastTabs.filter((url) => /^https?:/i.test(url));

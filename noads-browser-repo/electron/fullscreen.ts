@@ -29,6 +29,8 @@ export interface FullscreenDeps {
   /** Optional product-specific presentation hooks. */
   enter?: (tab: Tab) => void;
   exit?: () => void;
+  /** Optional diagnostic logger (main routes it to fullscreen.log). */
+  log?: (message: string) => void;
 }
 
 /** Statement form: never returns the (possibly pending) exit promise. */
@@ -99,7 +101,9 @@ export function createFullscreenTracker(deps: FullscreenDeps): FullscreenTracker
     sync() {
       const win = deps.window();
       if (!win || win.isDestroyed()) return;
-      console.log(`[fullscreen] sync tabs=${tabs.size} presentationActive=${presentationActive} winFullscreen=${win.isFullScreen()}`);
+      deps.log?.(
+        `sync tabs=${tabs.size} presentationActive=${presentationActive} winFullscreen=${win.isFullScreen()}`,
+      );
 
       if (tabs.size > 0) {
         htmlExitRequested = false;
